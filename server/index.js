@@ -2,9 +2,13 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
+const sqlite3 = require("sqlite3").verbose();
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -15,26 +19,106 @@ const io = new Server(server, {
 });
 
 const PORT = 3001;
-// Default password is 'admin' if not specified in environment
-const SERVER_PASSWORD = process.env.SERVER_PASSWORD || "admin";
+const JWT_SECRET = "your-secret-key-change-this-in-production";
+
+// --- Database Setup ---
+const db = new sqlite3.Database("./database.sqlite", (err) => {
+  if (err) {
+    console.error("Error opening database", err.message);
+  } else {
+    console.log("Connected to the SQLite database.");
+    db.run(
+      `CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            password TEXT
+        )`,
+      (err) => {
+        if (err) {
+          console.error("Error creating table:", err.message);
+        }
+      },
+    );
+  }
+});
+
+// --- HTTP Auth Routes ---
+
+// Register
+app.post("/register", async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ error: "Username and password required" });
+  }
+
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const sql = "INSERT INTO users (username, password) VALUES (?, ?)";
+    db.run(sql, [username, hashedPassword], function (err) {
+      if (err) {
+        if (err.message.includes("UNIQUE constraint failed")) {
+          return res.status(400).json({ error: "Username already exists" });
+        }
+        return res.status(500).json({ error: err.message });
+      }
+      res
+        .status(201)
+        .json({ message: "User created successfully", userId: this.lastID });
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Login
+app.post("/login", (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ error: "Username and password required" });
+  }
+
+  const sql = "SELECT * FROM users WHERE username = ?";
+  db.get(sql, [username], async (err, user) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+
+    const match = await bcrypt.compare(password, user.password);
+    if (match) {
+      const token = jwt.sign(
+        { id: user.id, username: user.username },
+        JWT_SECRET,
+        { expiresIn: "24h" },
+      );
+      res.json({ token, username: user.username, userId: user.id });
+    } else {
+      res.status(401).json({ error: "Invalid credentials" });
+    }
+  });
+});
+
+// --- Socket.IO Middleware for Authentication ---
+io.use((socket, next) => {
+  const token = socket.handshake.auth.token;
+  if (!token) {
+    return next(new Error("Authentication error: Token required"));
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    if (err) {
+      return next(new Error("Authentication error: Invalid token"));
+    }
+    socket.user = decoded; // Attach user info to socket
+    next();
+  });
+});
+
+// --- Socket.IO Logic ---
 
 // Track which voice room a socket is in
 const socketVoiceRoom = {};
 
-// Authentication Middleware
-io.use((socket, next) => {
-  const password = socket.handshake.auth.password;
-  if (password === SERVER_PASSWORD) {
-    next();
-  } else {
-    const err = new Error("Authentication error: Invalid password");
-    err.data = { content: "Please provide the correct password." };
-    next(err);
-  }
-});
-
 io.on("connection", (socket) => {
-  console.log(`User Connected: ${socket.id}`);
+  console.log(`User Connected: ${socket.id} (${socket.user.username})`);
 
   // --- Text Chat Logic ---
   socket.on("join_text_channel", (channelId) => {
@@ -44,7 +128,16 @@ io.on("connection", (socket) => {
 
   socket.on("send_message", (data) => {
     // data: { channelId, message }
-    socket.to(data.channelId).emit("receive_message", data.message);
+    // We construct the full message object here to ensure author is correct
+    const messagePayload = {
+      content: data.message,
+      author: socket.user.username,
+      id: Date.now().toString(),
+      timestamp: new Date(),
+    };
+
+    // Broadcast to others in the channel
+    socket.to(data.channelId).emit("receive_message", messagePayload);
   });
 
   // --- Voice/Video Logic ---
@@ -102,7 +195,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    console.log("User Disconnected", socket.id);
+    console.log(`User Disconnected ${socket.id} (${socket.user.username})`);
     const voiceRoom = socketVoiceRoom[socket.id];
     if (voiceRoom) {
       socket.to(voiceRoom).emit("user_left", socket.id);
@@ -113,5 +206,4 @@ io.on("connection", (socket) => {
 
 server.listen(PORT, () => {
   console.log(`SERVER RUNNING ON PORT ${PORT}`);
-  console.log(`Server Password: ${SERVER_PASSWORD}`);
 });

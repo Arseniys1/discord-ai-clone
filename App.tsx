@@ -58,7 +58,7 @@ const App: React.FC = () => {
   const gainNodeRef = useRef<GainNode | null>(null);
 
   // Handle Login / Connect
-  const handleConnect = (url: string, password: string, user: string) => {
+  const handleConnect = (url: string, token: string, user: string) => {
     setConnectionError("");
 
     // Close existing socket if any
@@ -67,7 +67,7 @@ const App: React.FC = () => {
     }
 
     const newSocket = io(url, {
-      auth: { password },
+      auth: { token },
       transports: ["websocket", "polling"], // Enforce websocket for better performance if possible
     });
 
@@ -81,13 +81,12 @@ const App: React.FC = () => {
     newSocket.on("connect_error", (err) => {
       console.error("Connection Error:", err);
       // Determine if it's an auth error based on message or structure
-      // Note: socket.io middleware errors often come as plain errors
       let errorMsg = "Connection failed. Please check URL.";
       if (
-        err.message === "Authentication error: Invalid password" ||
-        err.message.includes("password")
+        err.message === "Authentication error: Invalid token" ||
+        err.message.includes("token")
       ) {
-        errorMsg = "Invalid Password.";
+        errorMsg = "Session expired or invalid. Please login again.";
       } else if (err.message === "xhr poll error") {
         errorMsg = "Server unreachable. Check URL.";
       }
@@ -104,14 +103,16 @@ const App: React.FC = () => {
 
     const socket = socketRef.current;
 
-    const onReceiveMessage = (message: string) => {
+    const onReceiveMessage = (message: any) => {
       setMessages((prev) => [
         ...prev,
         {
-          id: Date.now().toString(),
-          author: "User", // In a real app, send author info
-          content: message,
-          timestamp: new Date(),
+          id: message.id || Date.now().toString(),
+          author: message.author || "Unknown",
+          content: message.content || message, // Handle both object and string for backward compat
+          timestamp: message.timestamp
+            ? new Date(message.timestamp)
+            : new Date(),
         },
       ]);
     };

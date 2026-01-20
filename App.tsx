@@ -41,6 +41,9 @@ const App: React.FC = () => {
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(
     new Map(),
   );
+  const [remoteUsernames, setRemoteUsernames] = useState<Map<string, string>>(
+    new Map(),
+  );
 
   // Settings State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -150,8 +153,22 @@ const App: React.FC = () => {
       setMessages(formattedMessages);
     };
 
-    const onExistingUsers = (users: string[]) => {
-      users.forEach((userId) => createPeerConnection(userId, true));
+    const onExistingUsers = (users: { id: string; username: string }[]) => {
+      // Update usernames map
+      const newUsernames = new Map(remoteUsernames);
+      users.forEach((u) => {
+        newUsernames.set(u.id, u.username);
+        createPeerConnection(u.id, true);
+      });
+      setRemoteUsernames(newUsernames);
+    };
+
+    const onUserJoinedVoice = (user: { id: string; username: string }) => {
+      setRemoteUsernames((prev) => {
+        const newMap = new Map(prev);
+        newMap.set(user.id, user.username);
+        return newMap;
+      });
     };
 
     const onUserLeft = (userId: string) => {
@@ -160,6 +177,11 @@ const App: React.FC = () => {
         peerConnectionsRef.current.delete(userId);
       }
       setRemoteStreams((prev) => {
+        const newMap = new Map(prev);
+        newMap.delete(userId);
+        return newMap;
+      });
+      setRemoteUsernames((prev) => {
         const newMap = new Map(prev);
         newMap.delete(userId);
         return newMap;
@@ -200,6 +222,7 @@ const App: React.FC = () => {
     socket.on("receive_message", onReceiveMessage);
     socket.on("chat_history", onChatHistory);
     socket.on("existing_users", onExistingUsers);
+    socket.on("user_joined_voice", onUserJoinedVoice);
     socket.on("user_left", onUserLeft);
     socket.on("offer", onOffer);
     socket.on("answer", onAnswer);
@@ -214,6 +237,7 @@ const App: React.FC = () => {
       socket.off("receive_message", onReceiveMessage);
       socket.off("chat_history", onChatHistory);
       socket.off("existing_users", onExistingUsers);
+      socket.off("user_joined_voice", onUserJoinedVoice);
       socket.off("user_left", onUserLeft);
       socket.off("offer", onOffer);
       socket.off("answer", onAnswer);
@@ -420,6 +444,7 @@ const App: React.FC = () => {
     peerConnectionsRef.current.forEach((pc) => pc.close());
     peerConnectionsRef.current.clear();
     setRemoteStreams(new Map());
+    setRemoteUsernames(new Map());
 
     socketRef.current?.emit("leave_voice_channel");
 
@@ -559,6 +584,7 @@ const App: React.FC = () => {
               isScreenSharing={isScreenSharing}
               videoTrack={activeVideoTrack}
               remoteStreams={remoteStreams}
+              remoteUsernames={remoteUsernames}
             />
           )}
         </main>
@@ -593,7 +619,8 @@ const App: React.FC = () => {
                 </div>
               </div>
               <span className="text-[#949ba4] group-hover:text-white font-medium truncate">
-                User {userId.substring(0, 5)}...
+                {remoteUsernames.get(userId) ||
+                  `User ${userId.substring(0, 5)}...`}
               </span>
             </div>
           ))}

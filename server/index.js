@@ -198,10 +198,28 @@ io.on("connection", (socket) => {
 
     // Get list of other users in this voice channel
     const roomClients = io.sockets.adapter.rooms.get(channelId) || new Set();
-    const otherUsers = Array.from(roomClients).filter((id) => id !== socket.id);
+
+    const otherUsers = [];
+    roomClients.forEach((clientId) => {
+      if (clientId !== socket.id) {
+        const clientSocket = io.sockets.sockets.get(clientId);
+        if (clientSocket && clientSocket.user) {
+          otherUsers.push({
+            id: clientId,
+            username: clientSocket.user.username,
+          });
+        }
+      }
+    });
 
     // Send list of existing users to the new joiner so they can initiate offers
     socket.emit("existing_users", otherUsers);
+
+    // Notify others in the room about the new user (so they can update name mapping)
+    socket.to(channelId).emit("user_joined_voice", {
+      id: socket.id,
+      username: socket.user.username,
+    });
 
     console.log(`Socket ${socket.id} joined voice channel ${channelId}`);
   });

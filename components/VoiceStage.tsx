@@ -21,6 +21,7 @@ interface VoiceStageProps {
   isScreenSharing: boolean;
   videoTrack: MediaStream | null;
   remoteStreams: Map<string, MediaStream>;
+  remoteUsernames: Map<string, string>;
 }
 
 const VideoTile: React.FC<{
@@ -123,6 +124,7 @@ const VoiceStage: React.FC<VoiceStageProps> = ({
   isScreenSharing,
   videoTrack,
   remoteStreams,
+  remoteUsernames,
 }) => {
   if (!isConnected) {
     return (
@@ -174,7 +176,7 @@ const VoiceStage: React.FC<VoiceStageProps> = ({
           <VideoTile
             key={id}
             stream={stream}
-            label={`User ${id.substring(0, 5)}`}
+            label={remoteUsernames.get(id) || `User ${id.substring(0, 5)}...`}
           />
         ))}
       </div>

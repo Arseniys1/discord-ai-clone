@@ -62,6 +62,7 @@ const App: React.FC = () => {
   // Local Media Refs
   const localStreamRef = useRef<MediaStream | null>(null); // Final stream sent to peers
   const rawInputStreamRef = useRef<MediaStream | null>(null); // Raw mic stream
+  const screenStreamRef = useRef<MediaStream | null>(null); // Screen share source stream
   const audioContextRef = useRef<AudioContext | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
 
@@ -267,9 +268,6 @@ const App: React.FC = () => {
 
       // Add Local Tracks (Important! Otherwise they won't hear/see us)
       if (localStreamRef.current) {
-        // Check if tracks are already added to avoid duplication?
-        // RTCPeerConnection.addTrack throws if track already exists, but simple iteration is usually fine if PC is fresh.
-        // Since we might reuse PC or create fresh, let's just try adding.
         const senders = pc.getSenders();
         localStreamRef.current.getTracks().forEach((track) => {
           const alreadyHas = senders.some((s) => s.track === track);
@@ -385,85 +383,27 @@ const App: React.FC = () => {
     }
   };
 
-  const startVoiceSession = async (
-    withVideo = false,
-    withScreen = false,
-    specificDeviceId?: string,
-  ) => {
-    // 1. Get Local Media FIRST
-    try {
-      const deviceId = specificDeviceId || selectedInputDeviceId;
-      let stream: MediaStream;
-
-      if (withScreen) {
-        stream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-          audio: true,
-        });
-      } else {
-        const constraints = {
-          video: withVideo,
-          audio: deviceId ? { deviceId: { exact: deviceId } } : true,
-        };
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-      }
-
-      // 2. Setup Audio Processing (Volume)
-      rawInputStreamRef.current = stream;
-      let finalStream = stream;
-
-      // If audio present, route through GainNode
-      if (stream.getAudioTracks().length > 0) {
-        const audioCtx = new (
-          window.AudioContext || (window as any).webkitAudioContext
-        )();
-        audioContextRef.current = audioCtx;
-        const source = audioCtx.createMediaStreamSource(stream);
-        const gainNode = audioCtx.createGain();
-        gainNode.gain.value = inputVolume / 100;
-        gainNodeRef.current = gainNode;
-        const dest = audioCtx.createMediaStreamDestination();
-        source.connect(gainNode);
-        gainNode.connect(dest);
-
-        // Mix processed audio + original video
-        finalStream = new MediaStream([
-          ...dest.stream.getAudioTracks(),
-          ...stream.getVideoTracks(),
-        ]);
-      }
-
-      // 3. Set State
-      localStreamRef.current = finalStream;
-      setActiveVideoTrack(finalStream);
-      setIsVoiceConnected(true);
-      if (withVideo) setIsVideoEnabled(true);
-      if (withScreen) setIsScreenSharing(true);
-
-      // 4. Finally Join Channel
-      if (socketRef.current) {
-        socketRef.current.emit("join_voice_channel", activeChannel.id);
-      }
-    } catch (e) {
-      console.error("Failed to start voice session:", e);
-      alert("Could not access camera/microphone. Check permissions.");
-    }
-  };
-
   const stopSession = useCallback(() => {
-    // Stop Local Tracks
+    // Stop Final Stream Tracks
     if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((t) => t.stop());
+      localStreamRef.current.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
     }
+    // Stop Raw Mic Stream
     if (rawInputStreamRef.current) {
-      rawInputStreamRef.current.getTracks().forEach((t) => t.stop());
+      rawInputStreamRef.current.getTracks().forEach((track) => track.stop());
       rawInputStreamRef.current = null;
+    }
+    // Stop Screen Stream
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((track) => track.stop());
+      screenStreamRef.current = null;
     }
     // Close Audio Context
     if (audioContextRef.current) {
       audioContextRef.current.close();
       audioContextRef.current = null;
+      gainNodeRef.current = null;
     }
 
     // Close Peers
@@ -483,6 +423,110 @@ const App: React.FC = () => {
     setIsScreenSharing(false);
     setActiveVideoTrack(null);
   }, []);
+
+  const startVoiceSession = async (
+    withVideo = false,
+    withScreen = false,
+    specificDeviceId?: string,
+  ) => {
+    try {
+      const deviceId = specificDeviceId || selectedInputDeviceId;
+
+      // 1. Capture Microphone (Always needed for voice chat)
+      // We get this separate from display media to ensure we have mic audio
+      const micStream = await navigator.mediaDevices.getUserMedia({
+        audio: deviceId ? { deviceId: { exact: deviceId } } : true,
+        video: false,
+      });
+      rawInputStreamRef.current = micStream;
+
+      let displayStream: MediaStream | null = null;
+      let cameraStream: MediaStream | null = null;
+
+      if (withScreen) {
+        displayStream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: true, // Capture system audio
+        });
+        screenStreamRef.current = displayStream;
+
+        // Handle user clicking "Stop Sharing" in browser UI
+        displayStream.getVideoTracks()[0].onended = () => {
+          stopSession();
+        };
+      }
+
+      if (withVideo && !withScreen) {
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false, // Mic already captured
+        });
+      }
+
+      // 2. Audio Processing (Mix Mic + System Audio)
+      const audioCtx = new (
+        window.AudioContext || (window as any).webkitAudioContext
+      )();
+      audioContextRef.current = audioCtx;
+      const dest = audioCtx.createMediaStreamDestination();
+
+      // Mic Input
+      const micSource = audioCtx.createMediaStreamSource(micStream);
+      const micGain = audioCtx.createGain();
+      micGain.gain.value = inputVolume / 100;
+      gainNodeRef.current = micGain;
+      micSource.connect(micGain);
+      micGain.connect(dest);
+
+      // System Audio Input (from Screen Share)
+      if (displayStream && displayStream.getAudioTracks().length > 0) {
+        const sysSource = audioCtx.createMediaStreamSource(displayStream);
+        const sysGain = audioCtx.createGain();
+        sysGain.gain.value = 1.0;
+        sysSource.connect(sysGain);
+        sysGain.connect(dest);
+      }
+
+      // 3. Assemble Final Stream
+      const finalTracks: MediaStreamTrack[] = [];
+
+      // Audio
+      if (dest.stream.getAudioTracks().length > 0) {
+        finalTracks.push(dest.stream.getAudioTracks()[0]);
+      } else {
+        // Fallback
+        micStream.getAudioTracks().forEach((t) => finalTracks.push(t));
+      }
+
+      // Video
+      if (displayStream) {
+        displayStream.getVideoTracks().forEach((t) => finalTracks.push(t));
+      } else if (cameraStream) {
+        cameraStream.getVideoTracks().forEach((t) => finalTracks.push(t));
+      }
+
+      const finalStream = new MediaStream(finalTracks);
+      localStreamRef.current = finalStream;
+      setActiveVideoTrack(finalStream);
+
+      setIsVoiceConnected(true);
+      if (withVideo) setIsVideoEnabled(true);
+      if (withScreen) setIsScreenSharing(true);
+
+      // 4. Join Channel
+      if (socketRef.current) {
+        socketRef.current.emit("join_voice_channel", activeChannel.id);
+      }
+    } catch (e) {
+      console.error("Failed to start voice session:", e);
+      // Cleanup if failed
+      if (rawInputStreamRef.current) {
+        rawInputStreamRef.current.getTracks().forEach((t) => t.stop());
+        rawInputStreamRef.current = null;
+      }
+      alert("Could not start session. Check permissions.");
+    }
+  };
 
   const handleInputDeviceChange = (deviceId: string) => {
     setSelectedInputDeviceId(deviceId);

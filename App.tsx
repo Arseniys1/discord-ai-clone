@@ -12,7 +12,7 @@ import { Phone, Plus, Compass } from "lucide-react";
 import { io, Socket } from "socket.io-client";
 
 const App: React.FC = () => {
-  // Login & Connection State
+  // --- Global State ---
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [connectionError, setConnectionError] = useState("");
   const [username, setUsername] = useState("You");
@@ -21,15 +21,11 @@ const App: React.FC = () => {
   const [activeChannel, setActiveChannel] = useState<Channel>(
     SERVERS[0].channels[0],
   );
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "1",
-      author: "System",
-      content:
-        "Welcome! Connect to a text channel to chat or a voice channel to speak.",
-      timestamp: new Date(),
-    },
-  ]);
+
+  // Chat State
+  const [messages, setMessages] = useState<Message[]>([]);
+
+  // Voice/Video State
   const [isVoiceConnected, setIsVoiceConnected] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [isDeafened, setIsDeafened] = useState(false);
@@ -38,9 +34,13 @@ const App: React.FC = () => {
   const [activeVideoTrack, setActiveVideoTrack] = useState<MediaStream | null>(
     null,
   );
+
+  // Remote Users State
+  // Map<socketId, MediaStream>
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(
     new Map(),
   );
+  // Map<socketId, username>
   const [remoteUsernames, setRemoteUsernames] = useState<Map<string, string>>(
     new Map(),
   );
@@ -52,27 +52,31 @@ const App: React.FC = () => {
     useState<string>("");
   const [inputVolume, setInputVolume] = useState<number>(100);
 
-  // Socket & WebRTC Refs
+  // --- Refs ---
   const socketRef = useRef<Socket | null>(null);
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-  const localStreamRef = useRef<MediaStream | null>(null); // Processed stream sent to peers
-  const rawInputStreamRef = useRef<MediaStream | null>(null); // Raw stream from mic
+  const iceCandidatesQueueRef = useRef<Map<string, RTCIceCandidateInit[]>>(
+    new Map(),
+  );
+
+  // Local Media Refs
+  const localStreamRef = useRef<MediaStream | null>(null); // Final stream sent to peers
+  const rawInputStreamRef = useRef<MediaStream | null>(null); // Raw mic stream
   const audioContextRef = useRef<AudioContext | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
 
-  // Handle Login / Connect
+  // --- Auth & Socket Connection ---
   const handleConnect = useCallback(
     (url: string, token: string, user: string) => {
       setConnectionError("");
 
-      // Close existing socket if any
       if (socketRef.current) {
         socketRef.current.disconnect();
       }
 
       const newSocket = io(url, {
         auth: { token },
-        transports: ["websocket", "polling"], // Enforce websocket for better performance if possible
+        transports: ["websocket", "polling"],
       });
 
       newSocket.on("connect", () => {
@@ -81,7 +85,6 @@ const App: React.FC = () => {
         setUsername(user);
         setConnectionError("");
 
-        // Save session to localStorage
         localStorage.setItem("discord_clone_token", token);
         localStorage.setItem("discord_clone_username", user);
         localStorage.setItem("discord_clone_url", url);
@@ -89,20 +92,14 @@ const App: React.FC = () => {
 
       newSocket.on("connect_error", (err) => {
         console.error("Connection Error:", err);
-        // Determine if it's an auth error based on message or structure
-        let errorMsg = "Connection failed. Please check URL.";
+        let errorMsg = "Connection failed.";
         if (
-          err.message === "Authentication error: Invalid token" ||
-          err.message.includes("token")
+          err.message.includes("token") ||
+          err.message.includes("Authentication")
         ) {
-          errorMsg = "Session expired or invalid. Please login again.";
-          // Clear session on auth error
+          errorMsg = "Session expired. Please login again.";
           localStorage.removeItem("discord_clone_token");
-          localStorage.removeItem("discord_clone_username");
-          localStorage.removeItem("discord_clone_url");
           setIsLoggedIn(false);
-        } else if (err.message === "xhr poll error") {
-          errorMsg = "Server unreachable. Check URL.";
         }
         setConnectionError(errorMsg);
       });
@@ -112,7 +109,7 @@ const App: React.FC = () => {
     [],
   );
 
-  // Auto-login effect
+  // Auto-login
   useEffect(() => {
     const savedToken = localStorage.getItem("discord_clone_token");
     const savedUsername = localStorage.getItem("discord_clone_username");
@@ -123,157 +120,44 @@ const App: React.FC = () => {
     }
   }, [handleConnect]);
 
-  // Socket Event Listeners (Setup ONLY when logged in)
-  useEffect(() => {
-    if (!isLoggedIn || !socketRef.current) return;
+  // --- WebRTC Core Logic ---
 
-    const socket = socketRef.current;
+  // Helper to add ICE candidate safely
+  const addIceCandidate = async (
+    pc: RTCPeerConnection,
+    candidate: RTCIceCandidateInit,
+  ) => {
+    try {
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch (e) {
+      console.error("Error adding ICE candidate", e);
+    }
+  };
 
-    const onReceiveMessage = (message: any) => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: message.id || Date.now().toString(),
-          author: message.author || "Unknown",
-          content: message.content || message, // Handle both object and string for backward compat
-          timestamp: message.timestamp
-            ? new Date(message.timestamp)
-            : new Date(),
-        },
-      ]);
-    };
-
-    const onChatHistory = (history: any[]) => {
-      const formattedMessages = history.map((msg) => ({
-        id: msg.id.toString(),
-        author: msg.username,
-        content: msg.content,
-        timestamp: new Date(msg.timestamp),
-      }));
-      setMessages(formattedMessages);
-    };
-
-    const onExistingUsers = (users: { id: string; username: string }[]) => {
-      // Update usernames map
-      const newUsernames = new Map(remoteUsernames);
-      users.forEach((u) => {
-        newUsernames.set(u.id, u.username);
-        createPeerConnection(u.id, true);
-      });
-      setRemoteUsernames(newUsernames);
-    };
-
-    const onUserJoinedVoice = (user: { id: string; username: string }) => {
-      setRemoteUsernames((prev) => {
-        const newMap = new Map(prev);
-        newMap.set(user.id, user.username);
-        return newMap;
-      });
-    };
-
-    const onUserLeft = (userId: string) => {
-      if (peerConnectionsRef.current.has(userId)) {
-        peerConnectionsRef.current.get(userId)?.close();
-        peerConnectionsRef.current.delete(userId);
-      }
-      setRemoteStreams((prev) => {
-        const newMap = new Map(prev);
-        newMap.delete(userId);
-        return newMap;
-      });
-      setRemoteUsernames((prev) => {
-        const newMap = new Map(prev);
-        newMap.delete(userId);
-        return newMap;
-      });
-    };
-
-    const onOffer = async (data: {
-      from: string;
-      sdp: RTCSessionDescriptionInit;
-    }) => {
-      const pc = createPeerConnection(data.from, false);
-      await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit("answer", { to: data.from, sdp: answer });
-    };
-
-    const onAnswer = async (data: {
-      from: string;
-      sdp: RTCSessionDescriptionInit;
-    }) => {
-      const pc = peerConnectionsRef.current.get(data.from);
-      if (pc) {
-        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      }
-    };
-
-    const onCandidate = async (data: {
-      from: string;
-      candidate: RTCIceCandidateInit;
-    }) => {
-      const pc = peerConnectionsRef.current.get(data.from);
-      if (pc) {
-        await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-      }
-    };
-
-    socket.on("receive_message", onReceiveMessage);
-    socket.on("chat_history", onChatHistory);
-    socket.on("existing_users", onExistingUsers);
-    socket.on("user_joined_voice", onUserJoinedVoice);
-    socket.on("user_left", onUserLeft);
-    socket.on("offer", onOffer);
-    socket.on("answer", onAnswer);
-    socket.on("candidate", onCandidate);
-
-    // Initial Join for Text Channel
-    if (activeChannel.type === ChannelType.TEXT) {
-      socket.emit("join_text_channel", activeChannel.id);
+  // Create or Get PeerConnection
+  const getOrCreatePeerConnection = (userId: string) => {
+    if (peerConnectionsRef.current.has(userId)) {
+      return peerConnectionsRef.current.get(userId)!;
     }
 
-    return () => {
-      socket.off("receive_message", onReceiveMessage);
-      socket.off("chat_history", onChatHistory);
-      socket.off("existing_users", onExistingUsers);
-      socket.off("user_joined_voice", onUserJoinedVoice);
-      socket.off("user_left", onUserLeft);
-      socket.off("offer", onOffer);
-      socket.off("answer", onAnswer);
-      socket.off("candidate", onCandidate);
-    };
-  }, [isLoggedIn, activeChannel.id]); // Re-bind if channel or login status changes
-
-  // Join text channel on selection (Separate effect to handle channel switching after login)
-  useEffect(() => {
-    if (
-      isLoggedIn &&
-      activeChannel.type === ChannelType.TEXT &&
-      socketRef.current
-    ) {
-      socketRef.current.emit("join_text_channel", activeChannel.id);
-      setMessages([]);
-    }
-  }, [activeChannel, isLoggedIn]);
-
-  const createPeerConnection = (userId: string, isInitiator: boolean) => {
+    console.log(`Creating new PeerConnection for ${userId}`);
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
     });
 
-    peerConnectionsRef.current.set(userId, pc);
-
+    // Handle ICE Candidates
     pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        socketRef.current?.emit("candidate", {
+      if (event.candidate && socketRef.current) {
+        socketRef.current.emit("candidate", {
           to: userId,
           candidate: event.candidate,
         });
       }
     };
 
+    // Handle Remote Track
     pc.ontrack = (event) => {
+      console.log(`Received remote track from ${userId}`, event.streams[0]);
       setRemoteStreams((prev) => {
         const newMap = new Map(prev);
         newMap.set(userId, event.streams[0]);
@@ -281,172 +165,318 @@ const App: React.FC = () => {
       });
     };
 
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => {
-        if (localStreamRef.current) {
-          pc.addTrack(track, localStreamRef.current);
-        }
-      });
-    }
+    // Clean up on ICE failure
+    pc.oniceconnectionstatechange = () => {
+      if (
+        pc.iceConnectionState === "failed" ||
+        pc.iceConnectionState === "disconnected"
+      ) {
+        console.warn(
+          `ICE connection state for ${userId}: ${pc.iceConnectionState}`,
+        );
+      }
+    };
 
-    if (isInitiator) {
-      pc.createOffer().then((offer) => {
-        pc.setLocalDescription(offer);
-        socketRef.current?.emit("offer", { to: userId, sdp: offer });
-      });
-    }
-
+    peerConnectionsRef.current.set(userId, pc);
     return pc;
   };
 
-  // Enumerate Devices
+  // --- Socket Event Handlers ---
   useEffect(() => {
-    const getDevices = async () => {
-      try {
-        // Only request permission if we are about to setup devices or user logged in?
-        // Better to wait until needed, but for listing in settings we need it.
-        // We'll skip getUserMedia here to avoid popup on login screen, wait for settings open or voice join.
-        // However, SettingsModal expects devices.
-        if (isSettingsOpen || isVoiceConnected) {
-          const devices = await navigator.mediaDevices.enumerateDevices();
-          const inputs = devices.filter((d) => d.kind === "audioinput");
-          setInputDevices(inputs);
-          if (inputs.length > 0 && !selectedInputDeviceId) {
-            setSelectedInputDeviceId(inputs[0].deviceId);
-          }
+    if (!isLoggedIn || !socketRef.current) return;
+    const socket = socketRef.current;
+
+    const handleReceiveMessage = (message: any) => {
+      const msgObj =
+        typeof message === "string" ? { content: message } : message;
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: msgObj.id || Date.now().toString(),
+          author: msgObj.author || "Unknown",
+          content: msgObj.content || "Message",
+          timestamp: msgObj.timestamp ? new Date(msgObj.timestamp) : new Date(),
+        },
+      ]);
+    };
+
+    const handleChatHistory = (history: any[]) => {
+      const formatted = history.map((msg) => ({
+        id: msg.id.toString(),
+        author: msg.username,
+        content: msg.content,
+        timestamp: new Date(msg.timestamp),
+      }));
+      setMessages(formatted);
+    };
+
+    // --- Voice Events ---
+
+    const handleExistingUsers = async (
+      users: { id: string; username: string }[],
+    ) => {
+      console.log("Existing users in channel:", users);
+
+      // 1. Update Username Map
+      setRemoteUsernames((prev) => {
+        const next = new Map(prev);
+        users.forEach((u) => next.set(u.id, u.username));
+        return next;
+      });
+
+      // 2. Initiate Connections (We are the Joiner)
+      for (const user of users) {
+        const pc = getOrCreatePeerConnection(user.id);
+
+        // Add Local Tracks
+        if (localStreamRef.current) {
+          localStreamRef.current.getTracks().forEach((track) => {
+            if (localStreamRef.current) {
+              pc.addTrack(track, localStreamRef.current);
+            }
+          });
         }
-      } catch (e) {
-        console.error("Error enumerating devices:", e);
+
+        // Create Offer
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          socket.emit("offer", { to: user.id, sdp: offer });
+        } catch (e) {
+          console.error("Error creating offer:", e);
+        }
       }
     };
-    getDevices();
-    navigator.mediaDevices.addEventListener("devicechange", getDevices);
-    return () =>
-      navigator.mediaDevices.removeEventListener("devicechange", getDevices);
-  }, [isSettingsOpen, isVoiceConnected, selectedInputDeviceId]);
 
-  // Volume Control Effect
-  useEffect(() => {
-    if (gainNodeRef.current) {
-      gainNodeRef.current.gain.value = inputVolume / 100;
-    }
-  }, [inputVolume]);
+    const handleUserJoinedVoice = (user: { id: string; username: string }) => {
+      console.log("User joined:", user);
+      setRemoteUsernames((prev) => {
+        const next = new Map(prev);
+        next.set(user.id, user.username);
+        return next;
+      });
+      // Do NOTHING else. Wait for their Offer.
+    };
 
-  const handleInputDeviceChange = (deviceId: string) => {
-    setSelectedInputDeviceId(deviceId);
-    if (isVoiceConnected) {
-      // Restart session with new device
-      stopSession();
-      // Small delay to ensure cleanup
-      setTimeout(
-        () => startVoiceSession(isVideoEnabled, isScreenSharing, deviceId),
-        500,
-      );
+    const handleOffer = async (data: {
+      from: string;
+      sdp: RTCSessionDescriptionInit;
+    }) => {
+      console.log("Received Offer from:", data.from);
+      const pc = getOrCreatePeerConnection(data.from);
+
+      // Add Local Tracks (Important! Otherwise they won't hear/see us)
+      if (localStreamRef.current) {
+        // Check if tracks are already added to avoid duplication?
+        // RTCPeerConnection.addTrack throws if track already exists, but simple iteration is usually fine if PC is fresh.
+        // Since we might reuse PC or create fresh, let's just try adding.
+        const senders = pc.getSenders();
+        localStreamRef.current.getTracks().forEach((track) => {
+          const alreadyHas = senders.some((s) => s.track === track);
+          if (!alreadyHas && localStreamRef.current) {
+            pc.addTrack(track, localStreamRef.current);
+          }
+        });
+      }
+
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+
+        // Process Queued Candidates
+        const queue = iceCandidatesQueueRef.current.get(data.from) || [];
+        for (const candidate of queue) {
+          await addIceCandidate(pc, candidate);
+        }
+        iceCandidatesQueueRef.current.delete(data.from);
+
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit("answer", { to: data.from, sdp: answer });
+      } catch (e) {
+        console.error("Error handling offer:", e);
+      }
+    };
+
+    const handleAnswer = async (data: {
+      from: string;
+      sdp: RTCSessionDescriptionInit;
+    }) => {
+      console.log("Received Answer from:", data.from);
+      const pc = peerConnectionsRef.current.get(data.from);
+      if (!pc) return;
+
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+
+        // Process Queued Candidates
+        const queue = iceCandidatesQueueRef.current.get(data.from) || [];
+        for (const candidate of queue) {
+          await addIceCandidate(pc, candidate);
+        }
+        iceCandidatesQueueRef.current.delete(data.from);
+      } catch (e) {
+        console.error("Error handling answer:", e);
+      }
+    };
+
+    const handleCandidate = async (data: {
+      from: string;
+      candidate: RTCIceCandidateInit;
+    }) => {
+      const pc = peerConnectionsRef.current.get(data.from);
+      if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+        await addIceCandidate(pc, data.candidate);
+      } else {
+        // Queue it
+        const currentQueue = iceCandidatesQueueRef.current.get(data.from) || [];
+        currentQueue.push(data.candidate);
+        iceCandidatesQueueRef.current.set(data.from, currentQueue);
+      }
+    };
+
+    const handleUserLeft = (userId: string) => {
+      console.log("User left:", userId);
+      // Clean up PC
+      if (peerConnectionsRef.current.has(userId)) {
+        peerConnectionsRef.current.get(userId)?.close();
+        peerConnectionsRef.current.delete(userId);
+      }
+      // Clean up State
+      setRemoteStreams((prev) => {
+        const next = new Map(prev);
+        next.delete(userId);
+        return next;
+      });
+      setRemoteUsernames((prev) => {
+        const next = new Map(prev);
+        next.delete(userId);
+        return next;
+      });
+      iceCandidatesQueueRef.current.delete(userId);
+    };
+
+    socket.on("receive_message", handleReceiveMessage);
+    socket.on("chat_history", handleChatHistory);
+    socket.on("existing_users", handleExistingUsers);
+    socket.on("user_joined_voice", handleUserJoinedVoice);
+    socket.on("offer", handleOffer);
+    socket.on("answer", handleAnswer);
+    socket.on("candidate", handleCandidate);
+    socket.on("user_left", handleUserLeft);
+
+    return () => {
+      socket.off("receive_message", handleReceiveMessage);
+      socket.off("chat_history", handleChatHistory);
+      socket.off("existing_users", handleExistingUsers);
+      socket.off("user_joined_voice", handleUserJoinedVoice);
+      socket.off("offer", handleOffer);
+      socket.off("answer", handleAnswer);
+      socket.off("candidate", handleCandidate);
+      socket.off("user_left", handleUserLeft);
+    };
+  }, [isLoggedIn]); // Only re-run if login status changes
+
+  // --- UI Interactions ---
+
+  const joinTextChannel = (channelId: string) => {
+    if (socketRef.current) {
+      socketRef.current.emit("join_text_channel", channelId);
+      setMessages([]);
     }
   };
 
-  const startVoiceSession = useCallback(
-    async (
-      withVideo = false,
-      withScreen = false,
-      specificDeviceId?: string,
-    ) => {
-      try {
-        const deviceId = specificDeviceId || selectedInputDeviceId;
-        let userStream: MediaStream;
-        let finalStream: MediaStream;
+  const startVoiceSession = async (
+    withVideo = false,
+    withScreen = false,
+    specificDeviceId?: string,
+  ) => {
+    // 1. Get Local Media FIRST
+    try {
+      const deviceId = specificDeviceId || selectedInputDeviceId;
+      let stream: MediaStream;
 
-        if (withScreen) {
-          userStream = await navigator.mediaDevices.getDisplayMedia({
-            video: true,
-            audio: true,
-          });
-          finalStream = userStream;
-        } else {
-          // Get Raw Stream
-          userStream = await navigator.mediaDevices.getUserMedia({
-            video: withVideo,
-            audio: deviceId ? { deviceId: { exact: deviceId } } : true,
-          });
-
-          rawInputStreamRef.current = userStream;
-
-          // Process Audio (Volume Control)
-          if (userStream.getAudioTracks().length > 0) {
-            const audioCtx = new (
-              window.AudioContext || (window as any).webkitAudioContext
-            )();
-            audioContextRef.current = audioCtx;
-            const source = audioCtx.createMediaStreamSource(userStream);
-            const gainNode = audioCtx.createGain();
-            gainNode.gain.value = inputVolume / 100;
-            gainNodeRef.current = gainNode;
-            const destination = audioCtx.createMediaStreamDestination();
-
-            source.connect(gainNode);
-            gainNode.connect(destination);
-
-            // Combine processed audio with original video
-            const processedAudioTrack = destination.stream.getAudioTracks()[0];
-            const videoTracks = userStream.getVideoTracks();
-            finalStream = new MediaStream([
-              processedAudioTrack,
-              ...videoTracks,
-            ]);
-          } else {
-            finalStream = userStream;
-          }
-        }
-
-        localStreamRef.current = finalStream;
-        setActiveVideoTrack(finalStream);
-
-        // Add tracks to existing peer connections (if restarting/upgrading)
-        peerConnectionsRef.current.forEach((pc) => {
-          // Simple approach: Add new tracks.
-          finalStream
-            .getTracks()
-            .forEach((track) => pc.addTrack(track, finalStream));
+      if (withScreen) {
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: true,
         });
-
-        if (!isVoiceConnected) {
-          socketRef.current?.emit("join_voice_channel", activeChannel.id);
-        }
-
-        setIsVoiceConnected(true);
-        if (withVideo) setIsVideoEnabled(true);
-        if (withScreen) setIsScreenSharing(true);
-      } catch (err) {
-        console.error("Failed to access media devices", err);
+      } else {
+        const constraints = {
+          video: withVideo,
+          audio: deviceId ? { deviceId: { exact: deviceId } } : true,
+        };
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
       }
-    },
-    [activeChannel, selectedInputDeviceId, inputVolume, isVoiceConnected],
-  );
+
+      // 2. Setup Audio Processing (Volume)
+      rawInputStreamRef.current = stream;
+      let finalStream = stream;
+
+      // If audio present, route through GainNode
+      if (stream.getAudioTracks().length > 0) {
+        const audioCtx = new (
+          window.AudioContext || (window as any).webkitAudioContext
+        )();
+        audioContextRef.current = audioCtx;
+        const source = audioCtx.createMediaStreamSource(stream);
+        const gainNode = audioCtx.createGain();
+        gainNode.gain.value = inputVolume / 100;
+        gainNodeRef.current = gainNode;
+        const dest = audioCtx.createMediaStreamDestination();
+        source.connect(gainNode);
+        gainNode.connect(dest);
+
+        // Mix processed audio + original video
+        finalStream = new MediaStream([
+          ...dest.stream.getAudioTracks(),
+          ...stream.getVideoTracks(),
+        ]);
+      }
+
+      // 3. Set State
+      localStreamRef.current = finalStream;
+      setActiveVideoTrack(finalStream);
+      setIsVoiceConnected(true);
+      if (withVideo) setIsVideoEnabled(true);
+      if (withScreen) setIsScreenSharing(true);
+
+      // 4. Finally Join Channel
+      if (socketRef.current) {
+        socketRef.current.emit("join_voice_channel", activeChannel.id);
+      }
+    } catch (e) {
+      console.error("Failed to start voice session:", e);
+      alert("Could not access camera/microphone. Check permissions.");
+    }
+  };
 
   const stopSession = useCallback(() => {
-    // Stop Processed Stream
+    // Stop Local Tracks
     if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current.getTracks().forEach((t) => t.stop());
       localStreamRef.current = null;
     }
-    // Stop Raw Stream
     if (rawInputStreamRef.current) {
-      rawInputStreamRef.current.getTracks().forEach((track) => track.stop());
+      rawInputStreamRef.current.getTracks().forEach((t) => t.stop());
       rawInputStreamRef.current = null;
     }
     // Close Audio Context
     if (audioContextRef.current) {
       audioContextRef.current.close();
       audioContextRef.current = null;
-      gainNodeRef.current = null;
     }
 
+    // Close Peers
     peerConnectionsRef.current.forEach((pc) => pc.close());
     peerConnectionsRef.current.clear();
     setRemoteStreams(new Map());
     setRemoteUsernames(new Map());
+    iceCandidatesQueueRef.current.clear();
 
-    socketRef.current?.emit("leave_voice_channel");
+    // Leave Server Channel
+    if (socketRef.current) {
+      socketRef.current.emit("leave_voice_channel");
+    }
 
     setIsVoiceConnected(false);
     setIsVideoEnabled(false);
@@ -454,48 +484,42 @@ const App: React.FC = () => {
     setActiveVideoTrack(null);
   }, []);
 
-  const handleSendMessage = (text: string) => {
-    if (!text.trim()) return;
-    const userMsg: Message = {
-      id: Date.now().toString(),
-      author: username, // Use dynamic username
-      content: text,
-      timestamp: new Date(),
-    };
-    setMessages((prev) => [...prev, userMsg]);
-
-    socketRef.current?.emit("send_message", {
-      channelId: activeChannel.id,
-      message: text,
-    });
-  };
-
-  const handleToggleScreenShare = async () => {
-    if (isScreenSharing) {
+  const handleInputDeviceChange = (deviceId: string) => {
+    setSelectedInputDeviceId(deviceId);
+    if (isVoiceConnected) {
       stopSession();
-    } else {
-      stopSession();
-      setTimeout(() => startVoiceSession(false, true), 500);
+      // Allow cleanup
+      setTimeout(
+        () => startVoiceSession(isVideoEnabled, isScreenSharing, deviceId),
+        500,
+      );
     }
   };
 
-  const handleToggleVideo = () => {
-    if (isVideoEnabled) {
-      stopSession();
-      startVoiceSession(false, false); // Audio only
-    } else {
-      stopSession();
-      setTimeout(() => startVoiceSession(true, false), 500);
+  // Channel Selection
+  useEffect(() => {
+    if (isLoggedIn && activeChannel.type === ChannelType.TEXT) {
+      joinTextChannel(activeChannel.id);
     }
-  };
+  }, [activeChannel, isLoggedIn]);
 
+  // Volume Effect
+  useEffect(() => {
+    if (gainNodeRef.current) {
+      gainNodeRef.current.gain.value = inputVolume / 100;
+    }
+  }, [inputVolume]);
+
+  // Mute Effect
   useEffect(() => {
     if (localStreamRef.current) {
-      localStreamRef.current.getAudioTracks().forEach((track) => {
-        track.enabled = !isMuted;
-      });
+      localStreamRef.current
+        .getAudioTracks()
+        .forEach((t) => (t.enabled = !isMuted));
     }
   }, [isMuted]);
+
+  // --- Render ---
 
   if (!isLoggedIn) {
     return (
@@ -547,7 +571,23 @@ const App: React.FC = () => {
           isDeafened={isDeafened}
           onMute={() => setIsMuted(!isMuted)}
           onDeafen={() => setIsDeafened(!isDeafened)}
-          onOpenSettings={() => setIsSettingsOpen(true)}
+          onOpenSettings={() => {
+            // Trigger device enumeration only when opening settings
+            (async () => {
+              try {
+                // Request permission just to list labels if needed, or assume we have it
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const inputs = devices.filter((d) => d.kind === "audioinput");
+                setInputDevices(inputs);
+                if (inputs.length > 0 && !selectedInputDeviceId) {
+                  setSelectedInputDeviceId(inputs[0].deviceId);
+                }
+              } catch (e) {
+                console.error(e);
+              }
+            })();
+            setIsSettingsOpen(true);
+          }}
         />
       </div>
 
@@ -572,14 +612,50 @@ const App: React.FC = () => {
 
         <main className="flex-1 flex flex-col relative overflow-hidden">
           {activeChannel.type === ChannelType.TEXT ? (
-            <ChatArea messages={messages} onSendMessage={handleSendMessage} />
+            <ChatArea
+              messages={messages}
+              onSendMessage={(text) => {
+                if (socketRef.current && text.trim()) {
+                  // Optimistic update
+                  setMessages((prev) => [
+                    ...prev,
+                    {
+                      id: Date.now().toString(),
+                      author: username,
+                      content: text,
+                      timestamp: new Date(),
+                    },
+                  ]);
+                  socketRef.current.emit("send_message", {
+                    channelId: activeChannel.id,
+                    message: text,
+                  });
+                }
+              }}
+            />
           ) : (
             <VoiceStage
               isConnected={isVoiceConnected}
-              onConnect={() => startVoiceSession()}
+              onConnect={() => startVoiceSession(false, false)}
               onDisconnect={stopSession}
-              onToggleVideo={handleToggleVideo}
-              onToggleScreenShare={handleToggleScreenShare}
+              onToggleVideo={() => {
+                if (isVideoEnabled) {
+                  stopSession();
+                  startVoiceSession(false, false);
+                } else {
+                  stopSession();
+                  setTimeout(() => startVoiceSession(true, false), 500);
+                }
+              }}
+              onToggleScreenShare={() => {
+                if (isScreenSharing) {
+                  stopSession();
+                  startVoiceSession(false, false);
+                } else {
+                  stopSession();
+                  setTimeout(() => startVoiceSession(false, true), 500);
+                }
+              }}
               isVideoEnabled={isVideoEnabled}
               isScreenSharing={isScreenSharing}
               videoTrack={activeVideoTrack}
@@ -608,19 +684,18 @@ const App: React.FC = () => {
             </span>
           </div>
 
-          {Array.from(remoteStreams.keys()).map((userId, i) => (
+          {Array.from(remoteUsernames.entries()).map(([id, name]) => (
             <div
-              key={userId}
+              key={id}
               className="flex items-center space-x-3 cursor-pointer p-1 rounded hover:bg-[#35373c] group"
             >
               <div className="relative">
                 <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-xs text-white">
-                  {userId.substring(0, 2).toUpperCase()}
+                  {name.substring(0, 2).toUpperCase()}
                 </div>
               </div>
               <span className="text-[#949ba4] group-hover:text-white font-medium truncate">
-                {remoteUsernames.get(userId) ||
-                  `User ${userId.substring(0, 5)}...`}
+                {name}
               </span>
             </div>
           ))}

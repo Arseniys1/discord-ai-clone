@@ -117,6 +117,16 @@ const App: React.FC = () => {
       ]);
     };
 
+    const onChatHistory = (history: any[]) => {
+      const formattedMessages = history.map((msg) => ({
+        id: msg.id.toString(),
+        author: msg.username,
+        content: msg.content,
+        timestamp: new Date(msg.timestamp),
+      }));
+      setMessages(formattedMessages);
+    };
+
     const onExistingUsers = (users: string[]) => {
       users.forEach((userId) => createPeerConnection(userId, true));
     };
@@ -165,6 +175,7 @@ const App: React.FC = () => {
     };
 
     socket.on("receive_message", onReceiveMessage);
+    socket.on("chat_history", onChatHistory);
     socket.on("existing_users", onExistingUsers);
     socket.on("user_left", onUserLeft);
     socket.on("offer", onOffer);
@@ -178,13 +189,14 @@ const App: React.FC = () => {
 
     return () => {
       socket.off("receive_message", onReceiveMessage);
+      socket.off("chat_history", onChatHistory);
       socket.off("existing_users", onExistingUsers);
       socket.off("user_left", onUserLeft);
       socket.off("offer", onOffer);
       socket.off("answer", onAnswer);
       socket.off("candidate", onCandidate);
     };
-  }, [isLoggedIn, activeChannel.id]); // Re-bind if channel or login status changes, but ideally just login status
+  }, [isLoggedIn, activeChannel.id]); // Re-bind if channel or login status changes
 
   // Join text channel on selection (Separate effect to handle channel switching after login)
   useEffect(() => {

@@ -27,6 +27,8 @@ const db = new sqlite3.Database("./database.sqlite", (err) => {
     console.error("Error opening database", err.message);
   } else {
     console.log("Connected to the SQLite database.");
+
+    // Create Users Table
     db.run(
       `CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -34,9 +36,22 @@ const db = new sqlite3.Database("./database.sqlite", (err) => {
             password TEXT
         )`,
       (err) => {
-        if (err) {
-          console.error("Error creating table:", err.message);
-        }
+        if (err) console.error("Error creating users table:", err.message);
+      },
+    );
+
+    // Create Messages Table
+    db.run(
+      `CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id TEXT,
+            user_id INTEGER,
+            username TEXT,
+            content TEXT,
+            timestamp TEXT
+        )`,
+      (err) => {
+        if (err) console.error("Error creating messages table:", err.message);
       },
     );
   }
@@ -124,17 +139,46 @@ io.on("connection", (socket) => {
   socket.on("join_text_channel", (channelId) => {
     socket.join(channelId);
     console.log(`Socket ${socket.id} joined text channel ${channelId}`);
+
+    // Load history
+    const sql =
+      "SELECT * FROM messages WHERE channel_id = ? ORDER BY timestamp ASC LIMIT 100";
+    db.all(sql, [channelId], (err, rows) => {
+      if (err) {
+        console.error("Error fetching history:", err);
+        return;
+      }
+      // Send history to the user who joined
+      socket.emit("chat_history", rows);
+    });
   });
 
   socket.on("send_message", (data) => {
     // data: { channelId, message }
-    // We construct the full message object here to ensure author is correct
+    const timestamp = new Date().toISOString();
     const messagePayload = {
       content: data.message,
       author: socket.user.username,
-      id: Date.now().toString(),
-      timestamp: new Date(),
+      id: Date.now().toString(), // Using timestamp as simplistic ID, but DB has auto-increment ID
+      timestamp: timestamp,
     };
+
+    // Save to DB
+    const insertSql =
+      "INSERT INTO messages (channel_id, user_id, username, content, timestamp) VALUES (?, ?, ?, ?, ?)";
+    db.run(
+      insertSql,
+      [
+        data.channelId,
+        socket.user.id,
+        socket.user.username,
+        data.message,
+        timestamp,
+      ],
+      (err) => {
+        if (err) console.error("Error saving message:", err);
+      },
+    );
 
     // Broadcast to others in the channel
     socket.to(data.channelId).emit("receive_message", messagePayload);

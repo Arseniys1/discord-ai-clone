@@ -7,12 +7,16 @@ import ChatArea from "./components/ChatArea";
 import VoiceStage from "./components/VoiceStage";
 import UserControlBar from "./components/UserControlBar";
 import SettingsModal from "./components/SettingsModal";
+import LoginScreen from "./components/LoginScreen";
 import { Phone, Plus, Compass } from "lucide-react";
 import { io, Socket } from "socket.io-client";
 
-const SOCKET_URL = "http://localhost:3001";
-
 const App: React.FC = () => {
+  // Login & Connection State
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [connectionError, setConnectionError] = useState("");
+  const [username, setUsername] = useState("You");
+
   const [activeServer, setActiveServer] = useState<Server>(SERVERS[0]);
   const [activeChannel, setActiveChannel] = useState<Channel>(
     SERVERS[0].channels[0],
@@ -53,32 +57,70 @@ const App: React.FC = () => {
   const audioContextRef = useRef<AudioContext | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
 
-  // Initialize Socket
-  useEffect(() => {
-    socketRef.current = io(SOCKET_URL);
+  // Handle Login / Connect
+  const handleConnect = (url: string, password: string, user: string) => {
+    setConnectionError("");
 
-    socketRef.current.on("connect", () => {
-      console.log("Connected to server");
+    // Close existing socket if any
+    if (socketRef.current) {
+      socketRef.current.disconnect();
+    }
+
+    const newSocket = io(url, {
+      auth: { password },
+      transports: ["websocket", "polling"], // Enforce websocket for better performance if possible
     });
 
-    socketRef.current.on("receive_message", (message: string) => {
+    newSocket.on("connect", () => {
+      console.log("Connected to server");
+      setIsLoggedIn(true);
+      setUsername(user);
+      setConnectionError("");
+    });
+
+    newSocket.on("connect_error", (err) => {
+      console.error("Connection Error:", err);
+      // Determine if it's an auth error based on message or structure
+      // Note: socket.io middleware errors often come as plain errors
+      let errorMsg = "Connection failed. Please check URL.";
+      if (
+        err.message === "Authentication error: Invalid password" ||
+        err.message.includes("password")
+      ) {
+        errorMsg = "Invalid Password.";
+      } else if (err.message === "xhr poll error") {
+        errorMsg = "Server unreachable. Check URL.";
+      }
+      setConnectionError(errorMsg);
+      // Do not set isLoggedIn to true
+    });
+
+    socketRef.current = newSocket;
+  };
+
+  // Socket Event Listeners (Setup ONLY when logged in)
+  useEffect(() => {
+    if (!isLoggedIn || !socketRef.current) return;
+
+    const socket = socketRef.current;
+
+    const onReceiveMessage = (message: string) => {
       setMessages((prev) => [
         ...prev,
         {
           id: Date.now().toString(),
-          author: "User",
+          author: "User", // In a real app, send author info
           content: message,
           timestamp: new Date(),
         },
       ]);
-    });
+    };
 
-    // WebRTC Signaling Events
-    socketRef.current.on("existing_users", (users: string[]) => {
+    const onExistingUsers = (users: string[]) => {
       users.forEach((userId) => createPeerConnection(userId, true));
-    });
+    };
 
-    socketRef.current.on("user_left", (userId: string) => {
+    const onUserLeft = (userId: string) => {
       if (peerConnectionsRef.current.has(userId)) {
         peerConnectionsRef.current.get(userId)?.close();
         peerConnectionsRef.current.delete(userId);
@@ -88,92 +130,72 @@ const App: React.FC = () => {
         newMap.delete(userId);
         return newMap;
       });
-    });
-
-    socketRef.current.on(
-      "offer",
-      async (data: { from: string; sdp: RTCSessionDescriptionInit }) => {
-        const pc = createPeerConnection(data.from, false);
-        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        socketRef.current?.emit("answer", { to: data.from, sdp: answer });
-      },
-    );
-
-    socketRef.current.on(
-      "answer",
-      async (data: { from: string; sdp: RTCSessionDescriptionInit }) => {
-        const pc = peerConnectionsRef.current.get(data.from);
-        if (pc) {
-          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-        }
-      },
-    );
-
-    socketRef.current.on(
-      "candidate",
-      async (data: { from: string; candidate: RTCIceCandidateInit }) => {
-        const pc = peerConnectionsRef.current.get(data.from);
-        if (pc) {
-          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-        }
-      },
-    );
-
-    return () => {
-      socketRef.current?.disconnect();
     };
-  }, []);
 
-  // Enumerate Devices
-  useEffect(() => {
-    const getDevices = async () => {
-      try {
-        await navigator.mediaDevices.getUserMedia({ audio: true }); // Request permission first
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const inputs = devices.filter((d) => d.kind === "audioinput");
-        setInputDevices(inputs);
-        if (inputs.length > 0 && !selectedInputDeviceId) {
-          setSelectedInputDeviceId(inputs[0].deviceId);
-        }
-      } catch (e) {
-        console.error("Error enumerating devices:", e);
+    const onOffer = async (data: {
+      from: string;
+      sdp: RTCSessionDescriptionInit;
+    }) => {
+      const pc = createPeerConnection(data.from, false);
+      await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit("answer", { to: data.from, sdp: answer });
+    };
+
+    const onAnswer = async (data: {
+      from: string;
+      sdp: RTCSessionDescriptionInit;
+    }) => {
+      const pc = peerConnectionsRef.current.get(data.from);
+      if (pc) {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
       }
     };
-    getDevices();
-    navigator.mediaDevices.addEventListener("devicechange", getDevices);
-    return () =>
-      navigator.mediaDevices.removeEventListener("devicechange", getDevices);
-  }, []); // Only run once on mount (and setup listener)
 
-  // Volume Control Effect
-  useEffect(() => {
-    if (gainNodeRef.current) {
-      gainNodeRef.current.gain.value = inputVolume / 100;
-    }
-  }, [inputVolume]);
+    const onCandidate = async (data: {
+      from: string;
+      candidate: RTCIceCandidateInit;
+    }) => {
+      const pc = peerConnectionsRef.current.get(data.from);
+      if (pc) {
+        await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+      }
+    };
 
-  const handleInputDeviceChange = (deviceId: string) => {
-    setSelectedInputDeviceId(deviceId);
-    if (isVoiceConnected) {
-      // Restart session with new device
-      stopSession();
-      // Small delay to ensure cleanup
-      setTimeout(
-        () => startVoiceSession(isVideoEnabled, isScreenSharing, deviceId),
-        500,
-      );
-    }
-  };
+    socket.on("receive_message", onReceiveMessage);
+    socket.on("existing_users", onExistingUsers);
+    socket.on("user_left", onUserLeft);
+    socket.on("offer", onOffer);
+    socket.on("answer", onAnswer);
+    socket.on("candidate", onCandidate);
 
-  // Join text channel on selection
-  useEffect(() => {
+    // Initial Join for Text Channel
     if (activeChannel.type === ChannelType.TEXT) {
-      socketRef.current?.emit("join_text_channel", activeChannel.id);
+      socket.emit("join_text_channel", activeChannel.id);
+    }
+
+    return () => {
+      socket.off("receive_message", onReceiveMessage);
+      socket.off("existing_users", onExistingUsers);
+      socket.off("user_left", onUserLeft);
+      socket.off("offer", onOffer);
+      socket.off("answer", onAnswer);
+      socket.off("candidate", onCandidate);
+    };
+  }, [isLoggedIn, activeChannel.id]); // Re-bind if channel or login status changes, but ideally just login status
+
+  // Join text channel on selection (Separate effect to handle channel switching after login)
+  useEffect(() => {
+    if (
+      isLoggedIn &&
+      activeChannel.type === ChannelType.TEXT &&
+      socketRef.current
+    ) {
+      socketRef.current.emit("join_text_channel", activeChannel.id);
       setMessages([]);
     }
-  }, [activeChannel]);
+  }, [activeChannel, isLoggedIn]);
 
   const createPeerConnection = (userId: string, isInitiator: boolean) => {
     const pc = new RTCPeerConnection({
@@ -215,6 +237,52 @@ const App: React.FC = () => {
     }
 
     return pc;
+  };
+
+  // Enumerate Devices
+  useEffect(() => {
+    const getDevices = async () => {
+      try {
+        // Only request permission if we are about to setup devices or user logged in?
+        // Better to wait until needed, but for listing in settings we need it.
+        // We'll skip getUserMedia here to avoid popup on login screen, wait for settings open or voice join.
+        // However, SettingsModal expects devices.
+        if (isSettingsOpen || isVoiceConnected) {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const inputs = devices.filter((d) => d.kind === "audioinput");
+          setInputDevices(inputs);
+          if (inputs.length > 0 && !selectedInputDeviceId) {
+            setSelectedInputDeviceId(inputs[0].deviceId);
+          }
+        }
+      } catch (e) {
+        console.error("Error enumerating devices:", e);
+      }
+    };
+    getDevices();
+    navigator.mediaDevices.addEventListener("devicechange", getDevices);
+    return () =>
+      navigator.mediaDevices.removeEventListener("devicechange", getDevices);
+  }, [isSettingsOpen, isVoiceConnected, selectedInputDeviceId]);
+
+  // Volume Control Effect
+  useEffect(() => {
+    if (gainNodeRef.current) {
+      gainNodeRef.current.gain.value = inputVolume / 100;
+    }
+  }, [inputVolume]);
+
+  const handleInputDeviceChange = (deviceId: string) => {
+    setSelectedInputDeviceId(deviceId);
+    if (isVoiceConnected) {
+      // Restart session with new device
+      stopSession();
+      // Small delay to ensure cleanup
+      setTimeout(
+        () => startVoiceSession(isVideoEnabled, isScreenSharing, deviceId),
+        500,
+      );
+    }
   };
 
   const startVoiceSession = useCallback(
@@ -276,7 +344,6 @@ const App: React.FC = () => {
         // Add tracks to existing peer connections (if restarting/upgrading)
         peerConnectionsRef.current.forEach((pc) => {
           // Simple approach: Add new tracks.
-          // (A more robust production approach would use replaceTrack on senders)
           finalStream
             .getTracks()
             .forEach((track) => pc.addTrack(track, finalStream));
@@ -330,7 +397,7 @@ const App: React.FC = () => {
     if (!text.trim()) return;
     const userMsg: Message = {
       id: Date.now().toString(),
-      author: "You",
+      author: username, // Use dynamic username
       content: text,
       timestamp: new Date(),
     };
@@ -363,13 +430,20 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (localStreamRef.current) {
-      // This toggles the 'enabled' state of the track being sent.
-      // For processed audio, this toggles the destination track.
       localStreamRef.current.getAudioTracks().forEach((track) => {
         track.enabled = !isMuted;
       });
     }
   }, [isMuted]);
+
+  if (!isLoggedIn) {
+    return (
+      <LoginScreen
+        onConnect={handleConnect}
+        connectionError={connectionError}
+      />
+    );
+  }
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#313338] select-none">
@@ -407,6 +481,7 @@ const App: React.FC = () => {
         </div>
 
         <UserControlBar
+          username={username}
           isMuted={isMuted}
           isDeafened={isDeafened}
           onMute={() => setIsMuted(!isMuted)}
@@ -467,7 +542,7 @@ const App: React.FC = () => {
               <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-[#2b2d31] rounded-full"></div>
             </div>
             <span className="text-[#949ba4] group-hover:text-white font-medium">
-              You
+              {username} (You)
             </span>
           </div>
 

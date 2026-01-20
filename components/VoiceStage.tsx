@@ -9,6 +9,7 @@ import {
   MessageSquare,
   Volume2,
   VolumeX,
+  Maximize,
 } from "lucide-react";
 
 interface VoiceStageProps {
@@ -30,6 +31,7 @@ const VideoTile: React.FC<{
   isLocal?: boolean;
   forceShowVideo?: boolean;
 }> = ({ stream, label, isLocal = false, forceShowVideo = false }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement>(null);
   const [volume, setVolume] = useState(100);
   const [isHovered, setIsHovered] = useState(false);
@@ -47,12 +49,27 @@ const VideoTile: React.FC<{
     }
   }, [volume, isLocal]);
 
+  const toggleFullscreen = () => {
+    if (!containerRef.current) return;
+
+    if (!document.fullscreenElement) {
+      containerRef.current.requestFullscreen().catch((err) => {
+        console.error(
+          `Error attempting to enable fullscreen mode: ${err.message} (${err.name})`,
+        );
+      });
+    } else {
+      document.exitFullscreen();
+    }
+  };
+
   // Determine if we should show the video element or the placeholder
   const showVideo =
     (stream && stream.getVideoTracks().length > 0) || forceShowVideo;
 
   return (
     <div
+      ref={containerRef}
       className="relative bg-[#2b2d31] rounded-xl overflow-hidden aspect-video group shadow-md border border-[#1f2023]"
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
@@ -87,6 +104,19 @@ const VideoTile: React.FC<{
         {label}
       </div>
 
+      {/* Controls Overlay */}
+      <div
+        className={`absolute top-4 right-4 flex space-x-2 transition-opacity duration-200 ${isHovered ? "opacity-100" : "opacity-0"}`}
+      >
+        <button
+          onClick={toggleFullscreen}
+          className="p-2 bg-black/60 hover:bg-black/80 rounded-lg text-white backdrop-blur-md transition-colors"
+          title="Fullscreen"
+        >
+          <Maximize size={16} />
+        </button>
+      </div>
+
       {/* Remote Volume Control Overlay */}
       {!isLocal && (
         <div
@@ -105,11 +135,6 @@ const VideoTile: React.FC<{
           />
         </div>
       )}
-
-      {/* Status icons could go here */}
-      <div className="absolute top-4 right-4 flex space-x-2 opacity-0 group-hover:opacity-100 transition-opacity">
-        {/* Placeholder for future icons like mute status */}
-      </div>
     </div>
   );
 };

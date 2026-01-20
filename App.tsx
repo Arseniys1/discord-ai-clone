@@ -58,44 +58,67 @@ const App: React.FC = () => {
   const gainNodeRef = useRef<GainNode | null>(null);
 
   // Handle Login / Connect
-  const handleConnect = (url: string, token: string, user: string) => {
-    setConnectionError("");
-
-    // Close existing socket if any
-    if (socketRef.current) {
-      socketRef.current.disconnect();
-    }
-
-    const newSocket = io(url, {
-      auth: { token },
-      transports: ["websocket", "polling"], // Enforce websocket for better performance if possible
-    });
-
-    newSocket.on("connect", () => {
-      console.log("Connected to server");
-      setIsLoggedIn(true);
-      setUsername(user);
+  const handleConnect = useCallback(
+    (url: string, token: string, user: string) => {
       setConnectionError("");
-    });
 
-    newSocket.on("connect_error", (err) => {
-      console.error("Connection Error:", err);
-      // Determine if it's an auth error based on message or structure
-      let errorMsg = "Connection failed. Please check URL.";
-      if (
-        err.message === "Authentication error: Invalid token" ||
-        err.message.includes("token")
-      ) {
-        errorMsg = "Session expired or invalid. Please login again.";
-      } else if (err.message === "xhr poll error") {
-        errorMsg = "Server unreachable. Check URL.";
+      // Close existing socket if any
+      if (socketRef.current) {
+        socketRef.current.disconnect();
       }
-      setConnectionError(errorMsg);
-      // Do not set isLoggedIn to true
-    });
 
-    socketRef.current = newSocket;
-  };
+      const newSocket = io(url, {
+        auth: { token },
+        transports: ["websocket", "polling"], // Enforce websocket for better performance if possible
+      });
+
+      newSocket.on("connect", () => {
+        console.log("Connected to server");
+        setIsLoggedIn(true);
+        setUsername(user);
+        setConnectionError("");
+
+        // Save session to localStorage
+        localStorage.setItem("discord_clone_token", token);
+        localStorage.setItem("discord_clone_username", user);
+        localStorage.setItem("discord_clone_url", url);
+      });
+
+      newSocket.on("connect_error", (err) => {
+        console.error("Connection Error:", err);
+        // Determine if it's an auth error based on message or structure
+        let errorMsg = "Connection failed. Please check URL.";
+        if (
+          err.message === "Authentication error: Invalid token" ||
+          err.message.includes("token")
+        ) {
+          errorMsg = "Session expired or invalid. Please login again.";
+          // Clear session on auth error
+          localStorage.removeItem("discord_clone_token");
+          localStorage.removeItem("discord_clone_username");
+          localStorage.removeItem("discord_clone_url");
+          setIsLoggedIn(false);
+        } else if (err.message === "xhr poll error") {
+          errorMsg = "Server unreachable. Check URL.";
+        }
+        setConnectionError(errorMsg);
+      });
+
+      socketRef.current = newSocket;
+    },
+    [],
+  );
+
+  // Auto-login effect
+  useEffect(() => {
+    const savedToken = localStorage.getItem("discord_clone_token");
+    const savedUsername = localStorage.getItem("discord_clone_username");
+    const savedUrl = localStorage.getItem("discord_clone_url");
+
+    if (savedToken && savedUsername && savedUrl) {
+      handleConnect(savedUrl, savedToken, savedUsername);
+    }
+  }, [handleConnect]);
 
   // Socket Event Listeners (Setup ONLY when logged in)
   useEffect(() => {

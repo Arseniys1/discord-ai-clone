@@ -6,6 +6,7 @@ import ChannelList from "./components/ChannelList";
 import ChatArea from "./components/ChatArea";
 import VoiceStage from "./components/VoiceStage";
 import UserControlBar from "./components/UserControlBar";
+import SettingsModal from "./components/SettingsModal";
 import { Phone, Plus, Compass } from "lucide-react";
 import { io, Socket } from "socket.io-client";
 
@@ -37,10 +38,20 @@ const App: React.FC = () => {
     new Map(),
   );
 
+  // Settings State
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [inputDevices, setInputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedInputDeviceId, setSelectedInputDeviceId] =
+    useState<string>("");
+  const [inputVolume, setInputVolume] = useState<number>(100);
+
   // Socket & WebRTC Refs
   const socketRef = useRef<Socket | null>(null);
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-  const localStreamRef = useRef<MediaStream | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null); // Processed stream sent to peers
+  const rawInputStreamRef = useRef<MediaStream | null>(null); // Raw stream from mic
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
 
   // Initialize Socket
   useEffect(() => {
@@ -55,7 +66,7 @@ const App: React.FC = () => {
         ...prev,
         {
           id: Date.now().toString(),
-          author: "User", // In a real app, send author info
+          author: "User",
           content: message,
           timestamp: new Date(),
         },
@@ -115,11 +126,52 @@ const App: React.FC = () => {
     };
   }, []);
 
+  // Enumerate Devices
+  useEffect(() => {
+    const getDevices = async () => {
+      try {
+        await navigator.mediaDevices.getUserMedia({ audio: true }); // Request permission first
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const inputs = devices.filter((d) => d.kind === "audioinput");
+        setInputDevices(inputs);
+        if (inputs.length > 0 && !selectedInputDeviceId) {
+          setSelectedInputDeviceId(inputs[0].deviceId);
+        }
+      } catch (e) {
+        console.error("Error enumerating devices:", e);
+      }
+    };
+    getDevices();
+    navigator.mediaDevices.addEventListener("devicechange", getDevices);
+    return () =>
+      navigator.mediaDevices.removeEventListener("devicechange", getDevices);
+  }, []); // Only run once on mount (and setup listener)
+
+  // Volume Control Effect
+  useEffect(() => {
+    if (gainNodeRef.current) {
+      gainNodeRef.current.gain.value = inputVolume / 100;
+    }
+  }, [inputVolume]);
+
+  const handleInputDeviceChange = (deviceId: string) => {
+    setSelectedInputDeviceId(deviceId);
+    if (isVoiceConnected) {
+      // Restart session with new device
+      stopSession();
+      // Small delay to ensure cleanup
+      setTimeout(
+        () => startVoiceSession(isVideoEnabled, isScreenSharing, deviceId),
+        500,
+      );
+    }
+  };
+
   // Join text channel on selection
   useEffect(() => {
     if (activeChannel.type === ChannelType.TEXT) {
       socketRef.current?.emit("join_text_channel", activeChannel.id);
-      setMessages([]); // Clear messages when switching channels (optional)
+      setMessages([]);
     }
   }, [activeChannel]);
 
@@ -166,45 +218,100 @@ const App: React.FC = () => {
   };
 
   const startVoiceSession = useCallback(
-    async (withVideo = false, withScreen = false) => {
+    async (
+      withVideo = false,
+      withScreen = false,
+      specificDeviceId?: string,
+    ) => {
       try {
-        let stream: MediaStream;
+        const deviceId = specificDeviceId || selectedInputDeviceId;
+        let userStream: MediaStream;
+        let finalStream: MediaStream;
+
         if (withScreen) {
-          stream = await navigator.mediaDevices.getDisplayMedia({
+          userStream = await navigator.mediaDevices.getDisplayMedia({
             video: true,
             audio: true,
           });
+          finalStream = userStream;
         } else {
-          stream = await navigator.mediaDevices.getUserMedia({
+          // Get Raw Stream
+          userStream = await navigator.mediaDevices.getUserMedia({
             video: withVideo,
-            audio: true,
+            audio: deviceId ? { deviceId: { exact: deviceId } } : true,
           });
+
+          rawInputStreamRef.current = userStream;
+
+          // Process Audio (Volume Control)
+          if (userStream.getAudioTracks().length > 0) {
+            const audioCtx = new (
+              window.AudioContext || (window as any).webkitAudioContext
+            )();
+            audioContextRef.current = audioCtx;
+            const source = audioCtx.createMediaStreamSource(userStream);
+            const gainNode = audioCtx.createGain();
+            gainNode.gain.value = inputVolume / 100;
+            gainNodeRef.current = gainNode;
+            const destination = audioCtx.createMediaStreamDestination();
+
+            source.connect(gainNode);
+            gainNode.connect(destination);
+
+            // Combine processed audio with original video
+            const processedAudioTrack = destination.stream.getAudioTracks()[0];
+            const videoTracks = userStream.getVideoTracks();
+            finalStream = new MediaStream([
+              processedAudioTrack,
+              ...videoTracks,
+            ]);
+          } else {
+            finalStream = userStream;
+          }
         }
 
-        localStreamRef.current = stream;
-        setActiveVideoTrack(stream);
+        localStreamRef.current = finalStream;
+        setActiveVideoTrack(finalStream);
 
-        // Add tracks to existing peer connections if we are reconnecting or upgrading
+        // Add tracks to existing peer connections (if restarting/upgrading)
         peerConnectionsRef.current.forEach((pc) => {
-          stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+          // Simple approach: Add new tracks.
+          // (A more robust production approach would use replaceTrack on senders)
+          finalStream
+            .getTracks()
+            .forEach((track) => pc.addTrack(track, finalStream));
         });
 
-        socketRef.current?.emit("join_voice_channel", activeChannel.id);
-        setIsVoiceConnected(true);
+        if (!isVoiceConnected) {
+          socketRef.current?.emit("join_voice_channel", activeChannel.id);
+        }
 
+        setIsVoiceConnected(true);
         if (withVideo) setIsVideoEnabled(true);
         if (withScreen) setIsScreenSharing(true);
       } catch (err) {
         console.error("Failed to access media devices", err);
       }
     },
-    [activeChannel],
+    [activeChannel, selectedInputDeviceId, inputVolume, isVoiceConnected],
   );
 
   const stopSession = useCallback(() => {
+    // Stop Processed Stream
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
+    }
+    // Stop Raw Stream
+    if (rawInputStreamRef.current) {
+      rawInputStreamRef.current.getTracks().forEach((track) => track.stop());
+      rawInputStreamRef.current = null;
+    }
+    // Close Audio Context
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+      gainNodeRef.current = null;
     }
 
     peerConnectionsRef.current.forEach((pc) => pc.close());
@@ -239,7 +346,6 @@ const App: React.FC = () => {
     if (isScreenSharing) {
       stopSession();
     } else {
-      // Logic could be improved to replace tracks instead of full restart
       stopSession();
       setTimeout(() => startVoiceSession(false, true), 500);
     }
@@ -247,7 +353,6 @@ const App: React.FC = () => {
 
   const handleToggleVideo = () => {
     if (isVideoEnabled) {
-      // Ideally just stop video track
       stopSession();
       startVoiceSession(false, false); // Audio only
     } else {
@@ -256,9 +361,10 @@ const App: React.FC = () => {
     }
   };
 
-  // Mute/Deafen logic would involve toggling track.enabled
   useEffect(() => {
     if (localStreamRef.current) {
+      // This toggles the 'enabled' state of the track being sent.
+      // For processed audio, this toggles the destination track.
       localStreamRef.current.getAudioTracks().forEach((track) => {
         track.enabled = !isMuted;
       });
@@ -267,6 +373,16 @@ const App: React.FC = () => {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#313338] select-none">
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        inputDevices={inputDevices}
+        selectedInputDeviceId={selectedInputDeviceId}
+        onSelectInputDevice={handleInputDeviceChange}
+        inputVolume={inputVolume}
+        onInputVolumeChange={setInputVolume}
+      />
+
       <Sidebar
         servers={SERVERS}
         activeServerId={activeServer.id}
@@ -286,9 +402,6 @@ const App: React.FC = () => {
             activeChannelId={activeChannel.id}
             onSelectChannel={(channel) => {
               setActiveChannel(channel);
-              if (channel.type === ChannelType.VOICE && !isVoiceConnected) {
-                // Optional: Auto-join could go here
-              }
             }}
           />
         </div>
@@ -298,7 +411,7 @@ const App: React.FC = () => {
           isDeafened={isDeafened}
           onMute={() => setIsMuted(!isMuted)}
           onDeafen={() => setIsDeafened(!isDeafened)}
-          onOpenSettings={() => {}}
+          onOpenSettings={() => setIsSettingsOpen(true)}
         />
       </div>
 

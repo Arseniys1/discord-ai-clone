@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Mic,
   Video,
@@ -7,6 +7,8 @@ import {
   User,
   MoreHorizontal,
   MessageSquare,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 
 interface VoiceStageProps {
@@ -27,23 +29,36 @@ const VideoTile: React.FC<{
   isLocal?: boolean;
   forceShowVideo?: boolean;
 }> = ({ stream, label, isLocal = false, forceShowVideo = false }) => {
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement>(null);
+  const [volume, setVolume] = useState(100);
+  const [isHovered, setIsHovered] = useState(false);
 
   useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
+    if (mediaRef.current && stream) {
+      mediaRef.current.srcObject = stream;
     }
   }, [stream]);
+
+  // Handle volume change
+  useEffect(() => {
+    if (mediaRef.current && !isLocal) {
+      mediaRef.current.volume = volume / 100;
+    }
+  }, [volume, isLocal]);
 
   // Determine if we should show the video element or the placeholder
   const showVideo =
     (stream && stream.getVideoTracks().length > 0) || forceShowVideo;
 
   return (
-    <div className="relative bg-[#2b2d31] rounded-xl overflow-hidden aspect-video group shadow-md border border-[#1f2023]">
+    <div
+      className="relative bg-[#2b2d31] rounded-xl overflow-hidden aspect-video group shadow-md border border-[#1f2023]"
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
       {showVideo ? (
         <video
-          ref={videoRef}
+          ref={mediaRef as React.RefObject<HTMLVideoElement>}
           autoPlay
           playsInline
           muted={isLocal} // Local user should be muted to avoid feedback
@@ -57,15 +72,42 @@ const VideoTile: React.FC<{
           <span className="text-white font-semibold">{label}</span>
           {/* If there is an audio stream but no video, we still need a hidden video/audio element to play sound */}
           {stream && (
-            <audio ref={(ref) => ref && (ref.srcObject = stream)} autoPlay />
+            <audio
+              ref={mediaRef as React.RefObject<HTMLAudioElement>}
+              autoPlay
+              muted={isLocal}
+            />
           )}
         </div>
       )}
+
+      {/* Label */}
       <div className="absolute bottom-4 left-4 flex items-center bg-black/50 px-2 py-1 rounded text-white text-xs font-semibold z-10 backdrop-blur-sm">
         {label}
       </div>
+
+      {/* Remote Volume Control Overlay */}
+      {!isLocal && (
+        <div
+          className={`absolute bottom-4 right-4 flex items-center bg-black/60 p-2 rounded-lg backdrop-blur-md transition-opacity duration-200 ${isHovered ? "opacity-100" : "opacity-0"}`}
+        >
+          <div className="mr-2 text-gray-300">
+            {volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
+          </div>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            value={volume}
+            onChange={(e) => setVolume(parseInt(e.target.value))}
+            className="w-24 h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-[#5865f2]"
+          />
+        </div>
+      )}
+
+      {/* Status icons could go here */}
       <div className="absolute top-4 right-4 flex space-x-2 opacity-0 group-hover:opacity-100 transition-opacity">
-        {/* Status icons could go here */}
+        {/* Placeholder for future icons like mute status */}
       </div>
     </div>
   );

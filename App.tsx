@@ -24,6 +24,9 @@ const App: React.FC = () => {
 
   // Chat State
   const [messages, setMessages] = useState<Message[]>([]);
+  const [onlineUsers, setOnlineUsers] = useState<
+    { id: string; username: string }[]
+  >([]);
 
   // Voice/Video State
   const [isVoiceConnected, setIsVoiceConnected] = useState(false);
@@ -211,6 +214,12 @@ const App: React.FC = () => {
       setMessages(formatted);
     };
 
+    const handleOnlineUsersList = (
+      users: { id: string; username: string }[],
+    ) => {
+      setOnlineUsers(users);
+    };
+
     // --- Voice Events ---
 
     const handleExistingUsers = async (
@@ -268,6 +277,9 @@ const App: React.FC = () => {
 
       // Add Local Tracks (Important! Otherwise they won't hear/see us)
       if (localStreamRef.current) {
+        // Check if tracks are already added to avoid duplication?
+        // RTCPeerConnection.addTrack throws if track already exists, but simple iteration is usually fine if PC is fresh.
+        // Since we might reuse PC or create fresh, let's just try adding.
         const senders = pc.getSenders();
         localStreamRef.current.getTracks().forEach((track) => {
           const alreadyHas = senders.some((s) => s.track === track);
@@ -355,6 +367,7 @@ const App: React.FC = () => {
 
     socket.on("receive_message", handleReceiveMessage);
     socket.on("chat_history", handleChatHistory);
+    socket.on("online_users_list", handleOnlineUsersList);
     socket.on("existing_users", handleExistingUsers);
     socket.on("user_joined_voice", handleUserJoinedVoice);
     socket.on("offer", handleOffer);
@@ -362,9 +375,13 @@ const App: React.FC = () => {
     socket.on("candidate", handleCandidate);
     socket.on("user_left", handleUserLeft);
 
+    // Request initial state
+    socket.emit("request_online_users");
+
     return () => {
       socket.off("receive_message", handleReceiveMessage);
       socket.off("chat_history", handleChatHistory);
+      socket.off("online_users_list", handleOnlineUsersList);
       socket.off("existing_users", handleExistingUsers);
       socket.off("user_joined_voice", handleUserJoinedVoice);
       socket.off("offer", handleOffer);
@@ -712,37 +729,62 @@ const App: React.FC = () => {
 
       <div className="hidden lg:flex flex-col w-60 bg-[#2b2d31] p-4">
         <h3 className="text-xs font-bold text-[#949ba4] uppercase mb-4">
-          Members
+          {activeChannel.type === ChannelType.TEXT
+            ? `Online — ${onlineUsers.length}`
+            : `Members — ${remoteUsernames.size + 1}`}
         </h3>
         <div className="space-y-4">
-          <div className="flex items-center space-x-3 cursor-pointer p-1 rounded hover:bg-[#35373c] group">
-            <div className="relative">
-              <img
-                src="https://picsum.photos/id/64/40/40"
-                className="w-8 h-8 rounded-full"
-              />
-              <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-[#2b2d31] rounded-full"></div>
-            </div>
-            <span className="text-[#949ba4] group-hover:text-white font-medium">
-              {username} (You)
-            </span>
-          </div>
-
-          {Array.from(remoteUsernames.entries()).map(([id, name]) => (
-            <div
-              key={id}
-              className="flex items-center space-x-3 cursor-pointer p-1 rounded hover:bg-[#35373c] group"
-            >
-              <div className="relative">
-                <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-xs text-white">
-                  {name.substring(0, 2).toUpperCase()}
+          {activeChannel.type === ChannelType.TEXT ? (
+            // Render Online Users
+            onlineUsers.map((user) => (
+              <div
+                key={user.id}
+                className="flex items-center space-x-3 cursor-pointer p-1 rounded hover:bg-[#35373c] group"
+              >
+                <div className="relative">
+                  <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-xs text-white">
+                    {user.username.substring(0, 2).toUpperCase()}
+                  </div>
+                  <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-[#2b2d31] rounded-full"></div>
                 </div>
+                <span className="text-[#949ba4] group-hover:text-white font-medium truncate">
+                  {user.username} {user.username === username ? "(You)" : ""}
+                </span>
               </div>
-              <span className="text-[#949ba4] group-hover:text-white font-medium truncate">
-                {name}
-              </span>
-            </div>
-          ))}
+            ))
+          ) : (
+            // Render Voice Participants
+            <>
+              <div className="flex items-center space-x-3 cursor-pointer p-1 rounded hover:bg-[#35373c] group">
+                <div className="relative">
+                  <img
+                    src="https://picsum.photos/id/64/40/40"
+                    className="w-8 h-8 rounded-full"
+                  />
+                  <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-[#2b2d31] rounded-full"></div>
+                </div>
+                <span className="text-[#949ba4] group-hover:text-white font-medium">
+                  {username} (You)
+                </span>
+              </div>
+
+              {Array.from(remoteUsernames.entries()).map(([id, name]) => (
+                <div
+                  key={id}
+                  className="flex items-center space-x-3 cursor-pointer p-1 rounded hover:bg-[#35373c] group"
+                >
+                  <div className="relative">
+                    <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-xs text-white">
+                      {name.substring(0, 2).toUpperCase()}
+                    </div>
+                  </div>
+                  <span className="text-[#949ba4] group-hover:text-white font-medium truncate">
+                    {name}
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
         </div>
       </div>
     </div>

@@ -131,9 +131,26 @@ io.use((socket, next) => {
 
 // Track which voice room a socket is in
 const socketVoiceRoom = {};
+// Track all online users: Map<socketId, {id, username, userId}>
+const onlineUsers = new Map();
 
 io.on("connection", (socket) => {
   console.log(`User Connected: ${socket.id} (${socket.user.username})`);
+
+  // Add to global online list
+  onlineUsers.set(socket.id, {
+    id: socket.id,
+    username: socket.user.username,
+    userId: socket.user.id,
+  });
+
+  // Broadcast updated online list to EVERYONE
+  io.emit("online_users_list", Array.from(onlineUsers.values()));
+
+  // Send list to requester immediately upon request
+  socket.on("request_online_users", () => {
+    socket.emit("online_users_list", Array.from(onlineUsers.values()));
+  });
 
   // --- Text Chat Logic ---
   socket.on("join_text_channel", (channelId) => {
@@ -155,6 +172,7 @@ io.on("connection", (socket) => {
 
   socket.on("send_message", (data) => {
     // data: { channelId, message }
+    // We construct the full message object here to ensure author is correct
     const timestamp = new Date().toISOString();
     const messagePayload = {
       content: data.message,
@@ -263,6 +281,10 @@ io.on("connection", (socket) => {
       socket.to(voiceRoom).emit("user_left", socket.id);
       delete socketVoiceRoom[socket.id];
     }
+
+    // Remove from global list and broadcast
+    onlineUsers.delete(socket.id);
+    io.emit("online_users_list", Array.from(onlineUsers.values()));
   });
 });
 

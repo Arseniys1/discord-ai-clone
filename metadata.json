@@ -1,0 +1,8 @@
+{
+  "name": "Discord-AI Clone",
+  "description": "A high-fidelity Discord clone featuring AI-powered text, voice, and video chat using the Gemini Live API.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

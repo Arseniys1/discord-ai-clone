@@ -6,6 +6,7 @@ interface LoginScreenProps {
     token: string,
     username: string,
     avatar?: string,
+    permissions?: string[],
   ) => void;
   connectionError?: string;
 }
@@ -61,7 +62,13 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
       }
 
       if (loginData.token) {
-        onConnect(url, loginData.token, loginData.username, loginData.avatar);
+        onConnect(
+          url,
+          loginData.token,
+          loginData.username,
+          loginData.avatar,
+          loginData.permissions,
+        );
       } else {
         throw new Error("No access token received");
       }

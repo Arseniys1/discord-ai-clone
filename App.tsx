@@ -17,6 +17,7 @@ const App: React.FC = () => {
   const [connectionError, setConnectionError] = useState("");
   const [username, setUsername] = useState("You");
   const [avatar, setAvatar] = useState<string | undefined>(undefined);
+  const [permissions, setPermissions] = useState<string[]>([]);
 
   const [activeServer, setActiveServer] = useState<Server>(SERVERS[0]);
   const [activeChannel, setActiveChannel] = useState<Channel>(
@@ -75,7 +76,13 @@ const App: React.FC = () => {
 
   // --- Auth & Socket Connection ---
   const handleConnect = useCallback(
-    (url: string, token: string, user: string, userAvatar?: string) => {
+    (
+      url: string,
+      token: string,
+      user: string,
+      userAvatar?: string,
+      userPermissions?: string[],
+    ) => {
       setConnectionError("");
 
       if (socketRef.current) {
@@ -92,12 +99,18 @@ const App: React.FC = () => {
         setIsLoggedIn(true);
         setUsername(user);
         setAvatar(userAvatar);
+        setPermissions(userPermissions || []);
         setConnectionError("");
 
         localStorage.setItem("discord_clone_token", token);
         localStorage.setItem("discord_clone_username", user);
         if (userAvatar)
           localStorage.setItem("discord_clone_avatar", userAvatar);
+        if (userPermissions)
+          localStorage.setItem(
+            "discord_clone_permissions",
+            JSON.stringify(userPermissions),
+          );
         localStorage.setItem("discord_clone_url", url);
       });
 
@@ -126,13 +139,23 @@ const App: React.FC = () => {
     const savedUsername = localStorage.getItem("discord_clone_username");
     const savedUrl = localStorage.getItem("discord_clone_url");
     const savedAvatar = localStorage.getItem("discord_clone_avatar");
+    const savedPermissionsStr = localStorage.getItem(
+      "discord_clone_permissions",
+    );
 
     if (savedToken && savedUsername && savedUrl) {
+      let savedPermissions: string[] = [];
+      try {
+        if (savedPermissionsStr)
+          savedPermissions = JSON.parse(savedPermissionsStr);
+      } catch (e) {}
+
       handleConnect(
         savedUrl,
         savedToken,
         savedUsername,
         savedAvatar || undefined,
+        savedPermissions,
       );
     }
   }, [handleConnect]);
@@ -664,6 +687,7 @@ const App: React.FC = () => {
             console.error("Failed to update avatar", e);
           }
         }}
+        isAdmin={permissions.includes("admin")}
       />
 
       <Sidebar

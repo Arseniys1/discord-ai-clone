@@ -11,6 +11,7 @@ interface SettingsModalProps {
   onInputVolumeChange: (volume: number) => void;
   currentAvatar?: string;
   onUpdateAvatar: (url: string) => void;
+  isAdmin?: boolean;
 }
 
 const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -23,10 +24,66 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   onInputVolumeChange,
   currentAvatar,
   onUpdateAvatar,
+  isAdmin,
 }) => {
-  const [activeTab, setActiveTab] = useState<"voice" | "profile">("voice");
+  const [activeTab, setActiveTab] = useState<"voice" | "profile" | "members">(
+    "voice",
+  );
   const [avatarUrl, setAvatarUrl] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [users, setUsers] = useState<any[]>([]);
+  const [roles, setRoles] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (isOpen && activeTab === "members" && isAdmin) {
+      const fetchData = async () => {
+        try {
+          const token = localStorage.getItem("discord_clone_token");
+          const savedUrl = localStorage.getItem("discord_clone_url");
+
+          const [usersRes, rolesRes] = await Promise.all([
+            fetch(`${savedUrl}/admin/users`, {
+              headers: { Authorization: `Bearer ${token}` },
+            }),
+            fetch(`${savedUrl}/admin/roles`, {
+              headers: { Authorization: `Bearer ${token}` },
+            }),
+          ]);
+
+          if (usersRes.ok && rolesRes.ok) {
+            setUsers(await usersRes.json());
+            setRoles(await rolesRes.json());
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      };
+      fetchData();
+    }
+  }, [isOpen, activeTab, isAdmin]);
+
+  const handleRoleUpdate = async (userId: string, roleId: number) => {
+    try {
+      const token = localStorage.getItem("discord_clone_token");
+      const savedUrl = localStorage.getItem("discord_clone_url");
+      await fetch(`${savedUrl}/admin/user-role`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ userId, roleId }),
+      });
+      // Refresh list
+      const usersRes = await fetch(`${savedUrl}/admin/users`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (usersRes.ok) setUsers(await usersRes.json());
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
   useEffect(() => {
     if (isOpen && currentAvatar) {
@@ -72,6 +129,14 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
             >
               Profile
             </div>
+            {isAdmin && (
+              <div
+                className={`px-2.5 py-1.5 rounded cursor-pointer text-base font-medium ${activeTab === "members" ? "bg-[#404249] text-white" : "text-[#b5bac1] hover:bg-[#35373c] hover:text-[#dbdee1]"}`}
+                onClick={() => setActiveTab("members")}
+              >
+                Members
+              </div>
+            )}
             <div className="text-[#b5bac1] hover:bg-[#35373c] hover:text-[#dbdee1] px-2.5 py-1.5 rounded cursor-pointer text-base font-medium">
               Appearance
             </div>
@@ -203,6 +268,52 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                       </button>
                     </div>
                   </div>
+                </div>
+              </>
+            )}
+
+            {activeTab === "members" && (
+              <>
+                <h2 className="text-xl font-bold text-white mb-6">
+                  Manage Members
+                </h2>
+                <div className="space-y-2">
+                  {users.map((user) => (
+                    <div
+                      key={user.id}
+                      className="flex items-center justify-between p-3 bg-[#2b2d31] rounded-md"
+                    >
+                      <div className="flex items-center space-x-3">
+                        <div className="w-8 h-8 rounded-full bg-[#5865f2] flex items-center justify-center text-white font-bold text-sm">
+                          {user.username.substring(0, 2).toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="text-white font-medium">
+                            {user.username}
+                          </div>
+                          <div className="text-[#949ba4] text-xs capitalize">
+                            {user.role || "User"}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex space-x-2">
+                        {roles.map((role) => (
+                          <button
+                            key={role.id}
+                            onClick={() => handleRoleUpdate(user.id, role.id)}
+                            className={`px-2 py-1 text-xs rounded border transition-colors ${
+                              user.role === role.name
+                                ? "bg-[#5865f2] border-[#5865f2] text-white"
+                                : "border-[#4e5058] text-[#b5bac1] hover:border-[#b5bac1] hover:text-white"
+                            }`}
+                          >
+                            {role.name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </>
             )}

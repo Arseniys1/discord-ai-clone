@@ -120,22 +120,32 @@ app.post("/register", async (req, res) => {
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Get 'User' role ID (assuming it exists from seed)
-    db.get("SELECT id FROM roles WHERE name = 'User'", (err, role) => {
-      const roleId = role ? role.id : null;
+    // Check if any users exist
+    db.get("SELECT COUNT(*) as count FROM users", (err, row) => {
+      if (err) return res.status(500).json({ error: err.message });
 
-      const sql =
-        "INSERT INTO users (username, password, role_id) VALUES (?, ?, ?)";
-      db.run(sql, [username, hashedPassword, roleId], function (err) {
-        if (err) {
-          if (err.message.includes("UNIQUE constraint failed")) {
-            return res.status(400).json({ error: "Username already exists" });
+      const isFirstUser = row.count === 0;
+      const roleName = isFirstUser ? "Admin" : "User";
+
+      // Get role ID
+      db.get("SELECT id FROM roles WHERE name = ?", [roleName], (err, role) => {
+        const roleId = role ? role.id : null;
+
+        const sql =
+          "INSERT INTO users (username, password, role_id) VALUES (?, ?, ?)";
+        db.run(sql, [username, hashedPassword, roleId], function (err) {
+          if (err) {
+            if (err.message.includes("UNIQUE constraint failed")) {
+              return res.status(400).json({ error: "Username already exists" });
+            }
+            return res.status(500).json({ error: err.message });
           }
-          return res.status(500).json({ error: err.message });
-        }
-        res
-          .status(201)
-          .json({ message: "User created successfully", userId: this.lastID });
+          res.status(201).json({
+            message: "User created successfully",
+            userId: this.lastID,
+            role: roleName,
+          });
+        });
       });
     });
   } catch (error) {

@@ -1,0 +1,8 @@
+tunnels:
+  frontend:
+    commandLine: tuna http 3000 subdomain=front
+    tags: [frontend, ui]
+
+  backend:
+    commandLine: tuna http 3001 subdomain=back
+    tags: [backend, api]

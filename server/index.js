@@ -28,21 +28,66 @@ const db = new sqlite3.Database(config.DB_PATH, (err) => {
   } else {
     console.log("Connected to the SQLite database.");
 
-    // Create Users Table
-    db.run(
-      `CREATE TABLE IF NOT EXISTS users (
+    db.serialize(() => {
+      // Create Roles Table
+      db.run(`CREATE TABLE IF NOT EXISTS roles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE,
+            permissions TEXT
+        )`);
+
+      // Seed Roles
+      const roles = [
+        {
+          name: "Admin",
+          permissions: JSON.stringify([
+            "admin",
+            "manage_users",
+            "manage_roles",
+            "delete_messages",
+          ]),
+        },
+        {
+          name: "Moderator",
+          permissions: JSON.stringify(["manage_users", "delete_messages"]),
+        },
+        { name: "User", permissions: JSON.stringify(["send_messages"]) },
+      ];
+
+      const insertRole = db.prepare(
+        "INSERT OR IGNORE INTO roles (name, permissions) VALUES (?, ?)",
+      );
+      roles.forEach((role) => insertRole.run(role.name, role.permissions));
+      insertRole.finalize();
+
+      // Create Users Table
+      db.run(
+        `CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE,
-            password TEXT
+            password TEXT,
+            role_id INTEGER,
+            FOREIGN KEY(role_id) REFERENCES roles(id)
         )`,
-      (err) => {
-        if (err) console.error("Error creating users table:", err.message);
-      },
-    );
+      );
 
-    // Create Messages Table
-    db.run(
-      `CREATE TABLE IF NOT EXISTS messages (
+      // Migration: Add role_id if it doesn't exist (for existing databases)
+      db.run("ALTER TABLE users ADD COLUMN role_id INTEGER", (err) => {
+        // Ignore error if column already exists
+
+        // Assign default role 'User' to existing users with NULL role_id
+        db.get("SELECT id FROM roles WHERE name = 'User'", (err, role) => {
+          if (role) {
+            db.run("UPDATE users SET role_id = ? WHERE role_id IS NULL", [
+              role.id,
+            ]);
+          }
+        });
+      });
+
+      // Create Messages Table
+      db.run(
+        `CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             channel_id TEXT,
             user_id INTEGER,
@@ -50,10 +95,8 @@ const db = new sqlite3.Database(config.DB_PATH, (err) => {
             content TEXT,
             timestamp TEXT
         )`,
-      (err) => {
-        if (err) console.error("Error creating messages table:", err.message);
-      },
-    );
+      );
+    });
   }
 });
 
@@ -68,17 +111,24 @@ app.post("/register", async (req, res) => {
 
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
-    const sql = "INSERT INTO users (username, password) VALUES (?, ?)";
-    db.run(sql, [username, hashedPassword], function (err) {
-      if (err) {
-        if (err.message.includes("UNIQUE constraint failed")) {
-          return res.status(400).json({ error: "Username already exists" });
+
+    // Get 'User' role ID (assuming it exists from seed)
+    db.get("SELECT id FROM roles WHERE name = 'User'", (err, role) => {
+      const roleId = role ? role.id : null;
+
+      const sql =
+        "INSERT INTO users (username, password, role_id) VALUES (?, ?, ?)";
+      db.run(sql, [username, hashedPassword, roleId], function (err) {
+        if (err) {
+          if (err.message.includes("UNIQUE constraint failed")) {
+            return res.status(400).json({ error: "Username already exists" });
+          }
+          return res.status(500).json({ error: err.message });
         }
-        return res.status(500).json({ error: err.message });
-      }
-      res
-        .status(201)
-        .json({ message: "User created successfully", userId: this.lastID });
+        res
+          .status(201)
+          .json({ message: "User created successfully", userId: this.lastID });
+      });
     });
   } catch (error) {
     res.status(500).json({ error: "Server error" });
@@ -92,24 +142,128 @@ app.post("/login", (req, res) => {
     return res.status(400).json({ error: "Username and password required" });
   }
 
-  const sql = "SELECT * FROM users WHERE username = ?";
+  const sql = `
+    SELECT users.id, users.username, users.password, users.role_id, roles.name as role_name, roles.permissions
+    FROM users
+    LEFT JOIN roles ON users.role_id = roles.id
+    WHERE username = ?
+  `;
   db.get(sql, [username], async (err, user) => {
     if (err) return res.status(500).json({ error: err.message });
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
     const match = await bcrypt.compare(password, user.password);
     if (match) {
+      const permissions = user.permissions ? JSON.parse(user.permissions) : [];
       const token = jwt.sign(
-        { id: user.id, username: user.username },
+        {
+          id: user.id,
+          username: user.username,
+          role: user.role_name,
+          permissions: permissions,
+        },
         JWT_SECRET,
         { expiresIn: "24h" },
       );
-      res.json({ token, username: user.username, userId: user.id });
+      res.json({
+        token,
+        username: user.username,
+        userId: user.id,
+        role: user.role_name,
+        permissions: permissions,
+      });
     } else {
       res.status(401).json({ error: "Invalid credentials" });
     }
   });
 });
+
+// --- Middleware for Admin Routes ---
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "Token required" });
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: "Invalid token" });
+    req.user = user;
+    next();
+  });
+};
+
+const checkPermission = (requiredPermission) => {
+  return (req, res, next) => {
+    const userPermissions = req.user.permissions || [];
+    if (
+      userPermissions.includes("admin") ||
+      userPermissions.includes(requiredPermission)
+    ) {
+      next();
+    } else {
+      res.status(403).json({ error: "Insufficient permissions" });
+    }
+  };
+};
+
+// --- Admin Routes ---
+
+// Get all users
+app.get(
+  "/admin/users",
+  authenticateToken,
+  checkPermission("manage_users"),
+  (req, res) => {
+    const sql = `
+        SELECT users.id, users.username, roles.name as role
+        FROM users
+        LEFT JOIN roles ON users.role_id = roles.id
+    `;
+    db.all(sql, [], (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json(rows);
+    });
+  },
+);
+
+// Get all roles
+app.get(
+  "/admin/roles",
+  authenticateToken,
+  checkPermission("manage_roles"),
+  (req, res) => {
+    db.all("SELECT * FROM roles", [], (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      // Parse permissions JSON for frontend
+      const roles = rows.map((r) => ({
+        ...r,
+        permissions: JSON.parse(r.permissions),
+      }));
+      res.json(roles);
+    });
+  },
+);
+
+// Assign role to user
+app.post(
+  "/admin/user-role",
+  authenticateToken,
+  checkPermission("manage_roles"),
+  (req, res) => {
+    const { userId, roleId } = req.body;
+    if (!userId || !roleId) {
+      return res.status(400).json({ error: "UserId and RoleId required" });
+    }
+
+    db.run(
+      "UPDATE users SET role_id = ? WHERE id = ?",
+      [roleId, userId],
+      function (err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: "User role updated successfully" });
+      },
+    );
+  },
+);
 
 // --- Socket.IO Middleware for Authentication ---
 io.use((socket, next) => {

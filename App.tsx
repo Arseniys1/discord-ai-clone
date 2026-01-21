@@ -16,6 +16,7 @@ const App: React.FC = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [connectionError, setConnectionError] = useState("");
   const [username, setUsername] = useState("You");
+  const [avatar, setAvatar] = useState<string | undefined>(undefined);
 
   const [activeServer, setActiveServer] = useState<Server>(SERVERS[0]);
   const [activeChannel, setActiveChannel] = useState<Channel>(
@@ -25,7 +26,7 @@ const App: React.FC = () => {
   // Chat State
   const [messages, setMessages] = useState<Message[]>([]);
   const [onlineUsers, setOnlineUsers] = useState<
-    { id: string; username: string }[]
+    { id: string; username: string; avatar?: string }[]
   >([]);
 
   // Voice/Video State
@@ -45,6 +46,9 @@ const App: React.FC = () => {
   );
   // Map<socketId, username>
   const [remoteUsernames, setRemoteUsernames] = useState<Map<string, string>>(
+    new Map(),
+  );
+  const [remoteAvatars, setRemoteAvatars] = useState<Map<string, string>>(
     new Map(),
   );
 
@@ -71,7 +75,7 @@ const App: React.FC = () => {
 
   // --- Auth & Socket Connection ---
   const handleConnect = useCallback(
-    (url: string, token: string, user: string) => {
+    (url: string, token: string, user: string, userAvatar?: string) => {
       setConnectionError("");
 
       if (socketRef.current) {
@@ -87,10 +91,13 @@ const App: React.FC = () => {
         console.log("Connected to server");
         setIsLoggedIn(true);
         setUsername(user);
+        setAvatar(userAvatar);
         setConnectionError("");
 
         localStorage.setItem("discord_clone_token", token);
         localStorage.setItem("discord_clone_username", user);
+        if (userAvatar)
+          localStorage.setItem("discord_clone_avatar", userAvatar);
         localStorage.setItem("discord_clone_url", url);
       });
 
@@ -118,9 +125,15 @@ const App: React.FC = () => {
     const savedToken = localStorage.getItem("discord_clone_token");
     const savedUsername = localStorage.getItem("discord_clone_username");
     const savedUrl = localStorage.getItem("discord_clone_url");
+    const savedAvatar = localStorage.getItem("discord_clone_avatar");
 
     if (savedToken && savedUsername && savedUrl) {
-      handleConnect(savedUrl, savedToken, savedUsername);
+      handleConnect(
+        savedUrl,
+        savedToken,
+        savedUsername,
+        savedAvatar || undefined,
+      );
     }
   }, [handleConnect]);
 
@@ -198,6 +211,7 @@ const App: React.FC = () => {
         {
           id: msgObj.id || Date.now().toString(),
           author: msgObj.author || "Unknown",
+          avatar: msgObj.avatar,
           content: msgObj.content || "Message",
           timestamp: msgObj.timestamp ? new Date(msgObj.timestamp) : new Date(),
         },
@@ -208,6 +222,7 @@ const App: React.FC = () => {
       const formatted = history.map((msg) => ({
         id: msg.id.toString(),
         author: msg.username,
+        avatar: msg.avatar,
         content: msg.content,
         timestamp: new Date(msg.timestamp),
       }));
@@ -215,7 +230,7 @@ const App: React.FC = () => {
     };
 
     const handleOnlineUsersList = (
-      users: { id: string; username: string }[],
+      users: { id: string; username: string; avatar?: string }[],
     ) => {
       setOnlineUsers(users);
     };
@@ -223,7 +238,7 @@ const App: React.FC = () => {
     // --- Voice Events ---
 
     const handleExistingUsers = async (
-      users: { id: string; username: string }[],
+      users: { id: string; username: string; avatar?: string }[],
     ) => {
       console.log("Existing users in channel:", users);
 
@@ -231,6 +246,14 @@ const App: React.FC = () => {
       setRemoteUsernames((prev) => {
         const next = new Map(prev);
         users.forEach((u) => next.set(u.id, u.username));
+        return next;
+      });
+
+      setRemoteAvatars((prev) => {
+        const next = new Map(prev);
+        users.forEach((u) => {
+          if (u.avatar) next.set(u.id, u.avatar);
+        });
         return next;
       });
 
@@ -258,13 +281,24 @@ const App: React.FC = () => {
       }
     };
 
-    const handleUserJoinedVoice = (user: { id: string; username: string }) => {
+    const handleUserJoinedVoice = (user: {
+      id: string;
+      username: string;
+      avatar?: string;
+    }) => {
       console.log("User joined:", user);
       setRemoteUsernames((prev) => {
         const next = new Map(prev);
         next.set(user.id, user.username);
         return next;
       });
+      if (user.avatar) {
+        setRemoteAvatars((prev) => {
+          const next = new Map(prev);
+          next.set(user.id, user.avatar!);
+          return next;
+        });
+      }
       // Do NOTHING else. Wait for their Offer.
     };
 
@@ -352,6 +386,11 @@ const App: React.FC = () => {
         peerConnectionsRef.current.delete(userId);
       }
       // Clean up State
+      setRemoteAvatars((prev) => {
+        const next = new Map(prev);
+        next.delete(userId);
+        return next;
+      });
       setRemoteStreams((prev) => {
         const next = new Map(prev);
         next.delete(userId);
@@ -601,6 +640,30 @@ const App: React.FC = () => {
         onSelectInputDevice={handleInputDeviceChange}
         inputVolume={inputVolume}
         onInputVolumeChange={setInputVolume}
+        currentAvatar={avatar}
+        onUpdateAvatar={async (url) => {
+          if (!isLoggedIn) return;
+          try {
+            const savedUrl = localStorage.getItem("discord_clone_url");
+            const token = localStorage.getItem("discord_clone_token");
+            const res = await fetch(`${savedUrl}/users/avatar`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({ avatar: url }),
+            });
+            if (res.ok) {
+              const data = await res.json();
+              const newAvatar = data.avatarUrl || url;
+              setAvatar(newAvatar);
+              localStorage.setItem("discord_clone_avatar", newAvatar);
+            }
+          } catch (e) {
+            console.error("Failed to update avatar", e);
+          }
+        }}
       />
 
       <Sidebar
@@ -628,6 +691,7 @@ const App: React.FC = () => {
 
         <UserControlBar
           username={username}
+          avatar={avatar}
           isMuted={isMuted}
           isDeafened={isDeafened}
           onMute={() => setIsMuted(!isMuted)}
@@ -742,9 +806,16 @@ const App: React.FC = () => {
                 className="flex items-center space-x-3 cursor-pointer p-1 rounded hover:bg-[#35373c] group"
               >
                 <div className="relative">
-                  <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-xs text-white">
-                    {user.username.substring(0, 2).toUpperCase()}
-                  </div>
+                  {user.avatar ? (
+                    <img
+                      src={user.avatar}
+                      className="w-8 h-8 rounded-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-xs text-white">
+                      {user.username.substring(0, 2).toUpperCase()}
+                    </div>
+                  )}
                   <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-[#2b2d31] rounded-full"></div>
                 </div>
                 <span className="text-[#949ba4] group-hover:text-white font-medium truncate">
@@ -757,10 +828,17 @@ const App: React.FC = () => {
             <>
               <div className="flex items-center space-x-3 cursor-pointer p-1 rounded hover:bg-[#35373c] group">
                 <div className="relative">
-                  <img
-                    src="https://picsum.photos/id/64/40/40"
-                    className="w-8 h-8 rounded-full"
-                  />
+                  {avatar ? (
+                    <img
+                      src={avatar}
+                      className="w-8 h-8 rounded-full object-cover"
+                    />
+                  ) : (
+                    <img
+                      src="https://picsum.photos/id/64/40/40"
+                      className="w-8 h-8 rounded-full"
+                    />
+                  )}
                   <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-[#2b2d31] rounded-full"></div>
                 </div>
                 <span className="text-[#949ba4] group-hover:text-white font-medium">
@@ -774,9 +852,16 @@ const App: React.FC = () => {
                   className="flex items-center space-x-3 cursor-pointer p-1 rounded hover:bg-[#35373c] group"
                 >
                   <div className="relative">
-                    <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-xs text-white">
-                      {name.substring(0, 2).toUpperCase()}
-                    </div>
+                    {remoteAvatars.get(id) ? (
+                      <img
+                        src={remoteAvatars.get(id)}
+                        className="w-8 h-8 rounded-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-xs text-white">
+                        {name.substring(0, 2).toUpperCase()}
+                      </div>
+                    )}
                   </div>
                   <span className="text-[#949ba4] group-hover:text-white font-medium truncate">
                     {name}

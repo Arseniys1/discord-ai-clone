@@ -1,7 +1,12 @@
 import React, { useState } from "react";
 
 interface LoginScreenProps {
-  onConnect: (url: string, token: string, username: string) => void;
+  onConnect: (
+    url: string,
+    token: string,
+    username: string,
+    avatar?: string,
+  ) => void;
   connectionError?: string;
 }
 
@@ -56,7 +61,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
       }
 
       if (loginData.token) {
-        onConnect(url, loginData.token, loginData.username);
+        onConnect(url, loginData.token, loginData.username, loginData.avatar);
       } else {
         throw new Error("No access token received");
       }

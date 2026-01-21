@@ -4,6 +4,7 @@ import { Mic, MicOff, Headphones, Settings } from "lucide-react";
 
 interface UserControlBarProps {
   username: string;
+  avatar?: string;
   isMuted: boolean;
   isDeafened: boolean;
   onMute: () => void;
@@ -13,6 +14,7 @@ interface UserControlBarProps {
 
 const UserControlBar: React.FC<UserControlBarProps> = ({
   username,
+  avatar,
   isMuted,
   isDeafened,
   onMute,
@@ -24,8 +26,8 @@ const UserControlBar: React.FC<UserControlBarProps> = ({
       <div className="flex items-center space-x-2 cursor-pointer p-1 rounded hover:bg-[#35373c] min-w-0 flex-1">
         <div className="relative">
           <img
-            src="https://picsum.photos/id/64/32/32"
-            className="w-8 h-8 rounded-full shrink-0"
+            src={avatar || "https://picsum.photos/id/64/32/32"}
+            className="w-8 h-8 rounded-full shrink-0 object-cover"
           />
           <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-[#232428] rounded-full"></div>
         </div>

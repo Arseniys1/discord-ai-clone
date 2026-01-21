@@ -1,12 +1,12 @@
-
 export enum ChannelType {
-  TEXT = 'TEXT',
-  VOICE = 'VOICE'
+  TEXT = "TEXT",
+  VOICE = "VOICE",
 }
 
 export interface Message {
   id: string;
   author: string;
+  avatar?: string;
   content: string;
   timestamp: Date;
   isAI?: boolean;
@@ -23,4 +23,10 @@ export interface Server {
   name: string;
   icon: string;
   channels: Channel[];
+}
+
+export interface User {
+  id: string;
+  username: string;
+  avatar?: string;
 }

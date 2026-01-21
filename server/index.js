@@ -6,16 +6,19 @@ const sqlite3 = require("sqlite3").verbose();
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const config = require("./config");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: "*",
-    methods: ["GET", "POST"],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   },
 });
 
@@ -85,6 +88,11 @@ const db = new sqlite3.Database(config.DB_PATH, (err) => {
         });
       });
 
+      // Migration: Add avatar column
+      db.run("ALTER TABLE users ADD COLUMN avatar TEXT", (err) => {
+        // Ignore error if column already exists
+      });
+
       // Create Messages Table
       db.run(
         `CREATE TABLE IF NOT EXISTS messages (
@@ -143,7 +151,7 @@ app.post("/login", (req, res) => {
   }
 
   const sql = `
-    SELECT users.id, users.username, users.password, users.role_id, roles.name as role_name, roles.permissions
+    SELECT users.id, users.username, users.password, users.avatar, users.role_id, roles.name as role_name, roles.permissions
     FROM users
     LEFT JOIN roles ON users.role_id = roles.id
     WHERE username = ?
@@ -159,6 +167,7 @@ app.post("/login", (req, res) => {
         {
           id: user.id,
           username: user.username,
+          avatar: user.avatar,
           role: user.role_name,
           permissions: permissions,
         },
@@ -169,6 +178,7 @@ app.post("/login", (req, res) => {
         token,
         username: user.username,
         userId: user.id,
+        avatar: user.avatar,
         role: user.role_name,
         permissions: permissions,
       });
@@ -265,6 +275,60 @@ app.post(
   },
 );
 
+// Update user avatar
+app.post("/users/avatar", authenticateToken, (req, res) => {
+  const { avatar } = req.body; // Base64 string or URL
+  const userId = req.user.id;
+
+  let avatarUrl = avatar;
+
+  if (avatar && avatar.startsWith("data:image")) {
+    try {
+      const matches = avatar.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+      if (matches && matches.length === 3) {
+        const extension = matches[1].split("/")[1];
+        const data = matches[2];
+        const buffer = Buffer.from(data, "base64");
+        const filename = `avatar_${userId}_${Date.now()}.${extension}`;
+        const filePath = path.join(__dirname, "uploads", filename);
+
+        fs.writeFileSync(filePath, buffer);
+        avatarUrl = `${req.protocol}://${req.get("host")}/uploads/${filename}`;
+      }
+    } catch (error) {
+      console.error("Error saving avatar:", error);
+      return res.status(500).json({ error: "Failed to upload avatar" });
+    }
+  }
+
+  db.run(
+    "UPDATE users SET avatar = ? WHERE id = ?",
+    [avatarUrl, userId],
+    (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+
+      // Update online users
+      for (const [socketId, user] of onlineUsers.entries()) {
+        if (user.userId === userId) {
+          // Update the map
+          onlineUsers.set(socketId, { ...user, avatar: avatarUrl });
+
+          // Update the socket object itself if we can find it
+          const socket = io.sockets.sockets.get(socketId);
+          if (socket && socket.user) {
+            socket.user.avatar = avatarUrl;
+          }
+        }
+      }
+
+      // Broadcast updated online list
+      io.emit("online_users_list", Array.from(onlineUsers.values()));
+
+      res.json({ message: "Avatar updated successfully", avatarUrl });
+    },
+  );
+});
+
 // --- Socket.IO Middleware for Authentication ---
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
@@ -296,6 +360,7 @@ io.on("connection", (socket) => {
     id: socket.id,
     username: socket.user.username,
     userId: socket.user.id,
+    avatar: socket.user.avatar,
   });
 
   // Broadcast updated online list to EVERYONE
@@ -312,8 +377,13 @@ io.on("connection", (socket) => {
     console.log(`Socket ${socket.id} joined text channel ${channelId}`);
 
     // Load history
-    const sql =
-      "SELECT * FROM messages WHERE channel_id = ? ORDER BY timestamp ASC LIMIT 100";
+    const sql = `
+      SELECT messages.*, users.avatar
+      FROM messages
+      LEFT JOIN users ON messages.user_id = users.id
+      WHERE channel_id = ?
+      ORDER BY timestamp ASC LIMIT 100
+    `;
     db.all(sql, [channelId], (err, rows) => {
       if (err) {
         console.error("Error fetching history:", err);
@@ -331,6 +401,7 @@ io.on("connection", (socket) => {
     const messagePayload = {
       content: data.message,
       author: socket.user.username,
+      avatar: socket.user.avatar,
       id: Date.now().toString(), // Using timestamp as simplistic ID, but DB has auto-increment ID
       timestamp: timestamp,
     };
@@ -379,6 +450,7 @@ io.on("connection", (socket) => {
           otherUsers.push({
             id: clientId,
             username: clientSocket.user.username,
+            avatar: clientSocket.user.avatar,
           });
         }
       }
@@ -391,6 +463,7 @@ io.on("connection", (socket) => {
     socket.to(channelId).emit("user_joined_voice", {
       id: socket.id,
       username: socket.user.username,
+      avatar: socket.user.avatar,
     });
 
     console.log(`Socket ${socket.id} joined voice channel ${channelId}`);

@@ -5,6 +5,7 @@ const cors = require("cors");
 const sqlite3 = require("sqlite3").verbose();
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const config = require("./config");
 
 const app = express();
 app.use(cors());
@@ -18,11 +19,10 @@ const io = new Server(server, {
   },
 });
 
-const PORT = 3001;
-const JWT_SECRET = "your-secret-key-change-this-in-production";
+const { PORT, JWT_SECRET } = config;
 
 // --- Database Setup ---
-const db = new sqlite3.Database("./database.sqlite", (err) => {
+const db = new sqlite3.Database(config.DB_PATH, (err) => {
   if (err) {
     console.error("Error opening database", err.message);
   } else {

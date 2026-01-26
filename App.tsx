@@ -14,6 +14,7 @@ const App: React.FC = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [connectionError, setConnectionError] = useState("");
   const [username, setUsername] = useState("You");
+  const [displayName, setDisplayName] = useState("You");
   const [avatar, setAvatar] = useState<string | undefined>(undefined);
   const [permissions, setPermissions] = useState<string[]>([]);
   const [userId, setUserId] = useState<number | undefined>(undefined);
@@ -25,7 +26,7 @@ const App: React.FC = () => {
   // Chat State
   const [messages, setMessages] = useState<Message[]>([]);
   const [onlineUsers, setOnlineUsers] = useState<
-    { id: string; username: string; avatar?: string }[]
+    { id: string; username: string; displayName?: string; userId?: number; avatar?: string }[]
   >([]);
 
   // Voice/Video State
@@ -81,6 +82,7 @@ const App: React.FC = () => {
       userAvatar?: string,
       userPermissions?: string[],
       userUserId?: number,
+      userDisplayName?: string,
     ) => {
       setConnectionError("");
 
@@ -93,10 +95,13 @@ const App: React.FC = () => {
         transports: ["websocket", "polling"],
       });
 
+      const dn = userDisplayName || user;
+
       newSocket.on("connect", async () => {
         console.log("Connected to server");
         setIsLoggedIn(true);
         setUsername(user);
+        setDisplayName(dn);
         setAvatar(userAvatar);
         setPermissions(userPermissions || []);
         setUserId(userUserId);
@@ -104,6 +109,7 @@ const App: React.FC = () => {
 
         localStorage.setItem("discord_clone_token", token);
         localStorage.setItem("discord_clone_username", user);
+        localStorage.setItem("discord_clone_displayName", dn);
         if (userAvatar)
           localStorage.setItem("discord_clone_avatar", userAvatar);
         if (userPermissions)
@@ -171,6 +177,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const savedToken = localStorage.getItem("discord_clone_token");
     const savedUsername = localStorage.getItem("discord_clone_username");
+    const savedDisplayName = localStorage.getItem("discord_clone_displayName");
     const savedUrl = localStorage.getItem("discord_clone_url");
     const savedAvatar = localStorage.getItem("discord_clone_avatar");
     const savedPermissionsStr = localStorage.getItem(
@@ -194,6 +201,7 @@ const App: React.FC = () => {
         savedAvatar || undefined,
         savedPermissions,
         savedUserId,
+        savedDisplayName || undefined,
       );
     }
   }, [handleConnect]);
@@ -337,7 +345,7 @@ const App: React.FC = () => {
     const handleChatHistory = (history: any[]) => {
       const formatted = history.map((msg) => ({
         id: msg.id.toString(),
-        author: msg.username,
+        author: msg.display_name || msg.username,
         avatar: msg.avatar,
         content: msg.content,
         timestamp: new Date(msg.timestamp),
@@ -348,7 +356,7 @@ const App: React.FC = () => {
     };
 
     const handleOnlineUsersList = (
-      users: { id: string; username: string; avatar?: string }[],
+      users: { id: string; username: string; displayName?: string; userId?: number; avatar?: string }[],
     ) => {
       setOnlineUsers(users);
     };
@@ -356,14 +364,13 @@ const App: React.FC = () => {
     // --- Voice Events ---
 
     const handleExistingUsers = async (
-      users: { id: string; username: string; avatar?: string }[],
+      users: { id: string; username: string; displayName?: string; avatar?: string }[],
     ) => {
       console.log("Existing users in channel:", users);
 
-      // 1. Update Username Map
       setRemoteUsernames((prev) => {
         const next = new Map(prev);
-        users.forEach((u) => next.set(u.id, u.username));
+        users.forEach((u) => next.set(u.id, u.displayName || u.username));
         return next;
       });
 
@@ -402,12 +409,13 @@ const App: React.FC = () => {
     const handleUserJoinedVoice = (user: {
       id: string;
       username: string;
+      displayName?: string;
       avatar?: string;
     }) => {
       console.log("User joined:", user);
       setRemoteUsernames((prev) => {
         const next = new Map(prev);
-        next.set(user.id, user.username);
+        next.set(user.id, user.displayName || user.username);
         return next;
       });
       if (user.avatar) {
@@ -859,6 +867,30 @@ const App: React.FC = () => {
             console.error("Failed to update avatar", e);
           }
         }}
+        currentDisplayName={displayName}
+        onUpdateDisplayName={async (name) => {
+          if (!isLoggedIn) return;
+          try {
+            const savedUrl = localStorage.getItem("discord_clone_url");
+            const token = localStorage.getItem("discord_clone_token");
+            const res = await fetch(`${savedUrl}/users/display-name`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({ displayName: name }),
+            });
+            if (res.ok) {
+              const data = await res.json();
+              const newName = data.displayName || name;
+              setDisplayName(newName);
+              localStorage.setItem("discord_clone_displayName", newName);
+            }
+          } catch (e) {
+            console.error("Failed to update display name", e);
+          }
+        }}
         isAdmin={permissions.includes("admin")}
         permissions={permissions}
         activeServerId={activeServer?.id}
@@ -882,6 +914,7 @@ const App: React.FC = () => {
 
         <UserControlBar
           username={username}
+          displayName={displayName}
           avatar={avatar}
           isMuted={isMuted}
           isDeafened={isDeafened}
@@ -932,7 +965,7 @@ const App: React.FC = () => {
                     ...prev,
                     {
                       id: Date.now().toString(),
-                      author: username,
+                      author: displayName,
                       content: text,
                       timestamp: new Date(),
                       userId: userId,
@@ -1012,13 +1045,13 @@ const App: React.FC = () => {
                     />
                   ) : (
                     <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-xs text-white">
-                      {user.username.substring(0, 2).toUpperCase()}
+                      {(user.displayName || user.username).substring(0, 2).toUpperCase()}
                     </div>
                   )}
                   <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-[#2b2d31] rounded-full"></div>
                 </div>
                 <span className="text-[#949ba4] group-hover:text-white font-medium truncate">
-                  {user.username} {user.username === username ? "(You)" : ""}
+                  {user.displayName || user.username} {user.userId === userId ? "(You)" : ""}
                 </span>
               </div>
             ))
@@ -1041,7 +1074,7 @@ const App: React.FC = () => {
                   <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-[#2b2d31] rounded-full"></div>
                 </div>
                 <span className="text-[#949ba4] group-hover:text-white font-medium">
-                  {username} (You)
+                  {displayName} (You)
                 </span>
               </div>
 

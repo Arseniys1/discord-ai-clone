@@ -8,6 +8,7 @@ interface LoginScreenProps {
     avatar?: string,
     permissions?: string[],
     userId?: number,
+    displayName?: string,
   ) => void;
   connectionError?: string;
 }
@@ -20,6 +21,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
   const [url, setUrl] = useState("http://localhost:3001");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [authError, setAuthError] = useState("");
 
@@ -35,11 +37,14 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
       const baseUrl = url.replace(/\/$/, "");
 
       if (isRegistering) {
-        // Register
         const regResponse = await fetch(`${baseUrl}/register`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username, password }),
+          body: JSON.stringify({
+            username,
+            password,
+            displayName: displayName.trim() || undefined,
+          }),
         });
 
         const regData = await regResponse.json();
@@ -70,6 +75,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
           loginData.avatar,
           loginData.permissions,
           loginData.userId,
+          loginData.displayName,
         );
       } else {
         throw new Error("No access token received");
@@ -143,6 +149,21 @@ const LoginScreen: React.FC<LoginScreenProps> = ({
               required
             />
           </div>
+
+          {isRegistering && (
+            <div>
+              <label className="block text-xs font-bold text-[#b5bac1] uppercase mb-2">
+                Display name <span className="text-[#949ba4]">(optional)</span>
+              </label>
+              <input
+                type="text"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="Shown instead of username"
+                className="w-full bg-[#1e1f22] text-white p-2.5 rounded border-none outline-none focus:ring-0 h-10 font-medium placeholder:text-[#4e5058]"
+              />
+            </div>
+          )}
 
           {!isRegistering && (
             <div className="text-[#00a8fc] text-sm font-medium cursor-pointer hover:underline mb-4">

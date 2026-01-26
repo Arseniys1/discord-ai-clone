@@ -93,6 +93,12 @@ const db = new sqlite3.Database(config.DB_PATH, (err) => {
         // Ignore error if column already exists
       });
 
+      // Migration: Add display_name column (shown instead of username in UI)
+      db.run("ALTER TABLE users ADD COLUMN display_name TEXT", (err) => {
+        // Ignore error if column already exists
+      });
+      db.run("UPDATE users SET display_name = username WHERE display_name IS NULL OR display_name = ''", () => {});
+
       // Create Messages Table
       db.run(
         `CREATE TABLE IF NOT EXISTS messages (
@@ -251,13 +257,14 @@ const db = new sqlite3.Database(config.DB_PATH, (err) => {
 
 // Register
 app.post("/register", async (req, res) => {
-  const { username, password } = req.body;
+  const { username, password, displayName } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: "Username and password required" });
   }
 
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
+    const display_name = (displayName && String(displayName).trim()) || username;
 
     // Check if any users exist
     db.get("SELECT COUNT(*) as count FROM users", (err, row) => {
@@ -271,8 +278,8 @@ app.post("/register", async (req, res) => {
         const roleId = role ? role.id : null;
 
         const sql =
-          "INSERT INTO users (username, password, role_id) VALUES (?, ?, ?)";
-        db.run(sql, [username, hashedPassword, roleId], function (err) {
+          "INSERT INTO users (username, password, role_id, display_name) VALUES (?, ?, ?, ?)";
+        db.run(sql, [username, hashedPassword, roleId, display_name], function (err) {
           if (err) {
             if (err.message.includes("UNIQUE constraint failed")) {
               return res.status(400).json({ error: "Username already exists" });
@@ -300,7 +307,7 @@ app.post("/login", (req, res) => {
   }
 
   const sql = `
-    SELECT users.id, users.username, users.password, users.avatar, users.role_id, roles.name as role_name, roles.permissions
+    SELECT users.id, users.username, users.password, users.avatar, users.display_name, users.role_id, roles.name as role_name, roles.permissions
     FROM users
     LEFT JOIN roles ON users.role_id = roles.id
     WHERE username = ?
@@ -312,10 +319,12 @@ app.post("/login", (req, res) => {
     const match = await bcrypt.compare(password, user.password);
     if (match) {
       const permissions = user.permissions ? JSON.parse(user.permissions) : [];
+      const displayName = user.display_name || user.username;
       const token = jwt.sign(
         {
           id: user.id,
           username: user.username,
+          displayName,
           avatar: user.avatar,
           role: user.role_name,
           permissions: permissions,
@@ -339,6 +348,7 @@ app.post("/login", (req, res) => {
       res.json({
         token,
         username: user.username,
+        displayName,
         userId: user.id,
         avatar: user.avatar,
         role: user.role_name,
@@ -386,7 +396,7 @@ app.get(
   checkPermission("manage_users"),
   (req, res) => {
     const sql = `
-        SELECT users.id, users.username, roles.name as role
+        SELECT users.id, users.username, users.display_name, roles.name as role
         FROM users
         LEFT JOIN roles ON users.role_id = roles.id
     `;
@@ -491,6 +501,43 @@ app.post("/users/avatar", authenticateToken, (req, res) => {
   );
 });
 
+// Update user display name
+app.post("/users/display-name", authenticateToken, (req, res) => {
+  const { displayName } = req.body;
+  const userId = req.user.id;
+
+  if (!displayName || typeof displayName !== "string") {
+    return res.status(400).json({ error: "Display name required" });
+  }
+
+  const trimmed = displayName.trim();
+  if (!trimmed.length) {
+    return res.status(400).json({ error: "Display name cannot be empty" });
+  }
+
+  db.run(
+    "UPDATE users SET display_name = ? WHERE id = ?",
+    [trimmed, userId],
+    (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+
+      // Update online users and socket.user
+      for (const [socketId, user] of onlineUsers.entries()) {
+        if (user.userId === userId) {
+          onlineUsers.set(socketId, { ...user, displayName: trimmed });
+          const socket = io.sockets.sockets.get(socketId);
+          if (socket && socket.user) {
+            socket.user.displayName = trimmed;
+          }
+        }
+      }
+
+      io.emit("online_users_list", Array.from(onlineUsers.values()));
+      res.json({ message: "Display name updated", displayName: trimmed });
+    },
+  );
+});
+
 // Get servers and their channels
 app.get("/servers", authenticateToken, (req, res) => {
   db.all("SELECT * FROM servers", [], async (err, servers) => {
@@ -566,6 +613,7 @@ app.get(
       SELECT 
         users.id, 
         users.username, 
+        users.display_name,
         users.avatar, 
         roles.name as role,
         roles.permissions,
@@ -802,7 +850,7 @@ app.get(
       }
 
       const sql = `
-        SELECT banned_users.*, users.username, users.avatar
+        SELECT banned_users.*, users.username, users.display_name, users.avatar
         FROM banned_users
         JOIN users ON banned_users.user_id = users.id
         WHERE banned_users.server_id = ?
@@ -832,11 +880,11 @@ app.get(
       }
 
       const sql = channelId
-        ? `SELECT muted_users.*, users.username, users.avatar
+        ? `SELECT muted_users.*, users.username, users.display_name, users.avatar
            FROM muted_users
            JOIN users ON muted_users.user_id = users.id
            WHERE muted_users.server_id = ? AND muted_users.channel_id = ?`
-        : `SELECT muted_users.*, users.username, users.avatar
+        : `SELECT muted_users.*, users.username, users.display_name, users.avatar
            FROM muted_users
            JOIN users ON muted_users.user_id = users.id
            WHERE muted_users.server_id = ? AND muted_users.channel_id IS NULL`;
@@ -924,16 +972,18 @@ io.use((socket, next) => {
 
 // Track which voice room a socket is in
 const socketVoiceRoom = {};
-// Track all online users: Map<socketId, {id, username, userId}>
+// Track all online users: Map<socketId, {id, username, displayName, userId, avatar}>
 const onlineUsers = new Map();
 
 io.on("connection", (socket) => {
-  console.log(`User Connected: ${socket.id} (${socket.user.username})`);
+  const displayName = socket.user.displayName || socket.user.username;
+  console.log(`User Connected: ${socket.id} (${displayName})`);
 
   // Add to global online list
   onlineUsers.set(socket.id, {
     id: socket.id,
     username: socket.user.username,
+    displayName,
     userId: socket.user.id,
     avatar: socket.user.avatar,
   });
@@ -967,9 +1017,9 @@ io.on("connection", (socket) => {
       }
     );
 
-    // Load history
+    // Load history (use display_name for author when available)
     const sql = `
-      SELECT messages.*, users.avatar
+      SELECT messages.*, users.avatar, users.display_name
       FROM messages
       LEFT JOIN users ON messages.user_id = users.id
       WHERE channel_id = ?
@@ -980,7 +1030,6 @@ io.on("connection", (socket) => {
         console.error("Error fetching history:", err);
         return;
       }
-      // Send history to the user who joined
       socket.emit("chat_history", rows);
     });
   });
@@ -1039,9 +1088,10 @@ io.on("connection", (socket) => {
 
                 // User can send message
                 const timestamp = new Date().toISOString();
+                const authorDisplay = socket.user.displayName || socket.user.username;
                 const messagePayload = {
                   content: data.message,
-                  author: socket.user.username,
+                  author: authorDisplay,
                   avatar: socket.user.avatar,
                   id: Date.now().toString(),
                   timestamp: timestamp,
@@ -1158,28 +1208,30 @@ io.on("connection", (socket) => {
 
     // Get list of other users in this voice channel
     const roomClients = io.sockets.adapter.rooms.get(channelId) || new Set();
+    const myDisplayName = socket.user.displayName || socket.user.username;
 
     const otherUsers = [];
     roomClients.forEach((clientId) => {
       if (clientId !== socket.id) {
         const clientSocket = io.sockets.sockets.get(clientId);
         if (clientSocket && clientSocket.user) {
+          const dn = clientSocket.user.displayName || clientSocket.user.username;
           otherUsers.push({
             id: clientId,
             username: clientSocket.user.username,
+            displayName: dn,
             avatar: clientSocket.user.avatar,
           });
         }
       }
     });
 
-    // Send list of existing users to the new joiner so they can initiate offers
     socket.emit("existing_users", otherUsers);
 
-    // Notify others in the room about the new user (so they can update name mapping)
     socket.to(channelId).emit("user_joined_voice", {
       id: socket.id,
       username: socket.user.username,
+      displayName: myDisplayName,
       avatar: socket.user.avatar,
     });
 
@@ -1219,7 +1271,8 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    console.log(`User Disconnected ${socket.id} (${socket.user.username})`);
+    const dn = socket.user.displayName || socket.user.username;
+    console.log(`User Disconnected ${socket.id} (${dn})`);
     const voiceRoom = socketVoiceRoom[socket.id];
     if (voiceRoom) {
       socket.to(voiceRoom).emit("user_left", socket.id);

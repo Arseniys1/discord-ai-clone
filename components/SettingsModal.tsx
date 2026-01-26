@@ -11,6 +11,8 @@ interface SettingsModalProps {
   onInputVolumeChange: (volume: number) => void;
   currentAvatar?: string;
   onUpdateAvatar: (url: string) => void;
+  currentDisplayName?: string;
+  onUpdateDisplayName?: (displayName: string) => void;
   isAdmin?: boolean;
   permissions?: string[];
   activeServerId?: string;
@@ -27,6 +29,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   onInputVolumeChange,
   currentAvatar,
   onUpdateAvatar,
+  currentDisplayName,
+  onUpdateDisplayName,
   isAdmin,
   permissions = [],
   activeServerId,
@@ -41,6 +45,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     "voice",
   );
   const [avatarUrl, setAvatarUrl] = useState("");
+  const [displayNameInput, setDisplayNameInput] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [users, setUsers] = useState<any[]>([]);
@@ -260,6 +265,12 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   }, [isOpen, currentAvatar]);
 
+  useEffect(() => {
+    if (isOpen && currentDisplayName !== undefined) {
+      setDisplayNameInput(currentDisplayName);
+    }
+  }, [isOpen, currentDisplayName]);
+
   if (!isOpen) return null;
 
   const handleSaveAvatar = () => {
@@ -387,6 +398,37 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                   User Profile
                 </h2>
 
+                {onUpdateDisplayName && (
+                  <div className="mb-6">
+                    <h3 className="text-sm font-bold text-[#b5bac1] uppercase mb-2">
+                      Display name
+                    </h3>
+                    <p className="text-[#949ba4] text-sm mb-2">
+                      Shown instead of username in the app.
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={displayNameInput}
+                        onChange={(e) => setDisplayNameInput(e.target.value)}
+                        className="flex-1 bg-[#1e1f22] text-white px-3 py-2 rounded border-none outline-none focus:ring-0"
+                        placeholder="Display name"
+                      />
+                      <button
+                        onClick={() => {
+                          const v = displayNameInput.trim();
+                          if (v) onUpdateDisplayName(v);
+                        }}
+                        disabled={!displayNameInput.trim()}
+                        className="bg-[#5865f2] hover:bg-[#4752c4] disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 rounded text-sm font-medium transition-colors flex items-center"
+                      >
+                        <Save size={16} className="mr-2" />
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div className="mb-8">
                   <div className="flex items-start space-x-6">
                     <div
@@ -471,12 +513,12 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                                   />
                                 ) : (
                                   <div className="w-8 h-8 rounded-full bg-[#5865f2] flex items-center justify-center text-white font-bold text-sm">
-                                    {member.username.substring(0, 2).toUpperCase()}
+                                    {(member.display_name || member.username).substring(0, 2).toUpperCase()}
                                   </div>
                                 )}
                                 <div>
                                   <div className="text-white font-medium">
-                                    {member.username}
+                                    {member.display_name || member.username}
                                   </div>
                                   <div className="text-[#949ba4] text-xs capitalize">
                                     {member.role || "User"}
@@ -505,7 +547,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                                   <button
                                     onClick={() => {
                                       const reason = prompt("Ban reason (optional):");
-                                      if (confirm(`Ban ${member.username}?`)) {
+                                      if (confirm(`Ban ${member.display_name || member.username}?`)) {
                                         handleBanUser(member.id, reason || undefined);
                                       }
                                     }}
@@ -543,12 +585,12 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                                   />
                                 ) : (
                                   <div className="w-8 h-8 rounded-full bg-[#5865f2] flex items-center justify-center text-white font-bold text-sm">
-                                    {muted.username.substring(0, 2).toUpperCase()}
+                                    {(muted.display_name || muted.username).substring(0, 2).toUpperCase()}
                                   </div>
                                 )}
                                 <div>
                                   <div className="text-white font-medium">
-                                    {muted.username}
+                                    {muted.display_name || muted.username}
                                   </div>
                                   <div className="text-[#949ba4] text-xs">
                                     {muted.muted_until ? `Until: ${new Date(muted.muted_until).toLocaleString()}` : "Permanent"}
@@ -590,12 +632,12 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                                   />
                                 ) : (
                                   <div className="w-8 h-8 rounded-full bg-[#5865f2] flex items-center justify-center text-white font-bold text-sm">
-                                    {banned.username.substring(0, 2).toUpperCase()}
+                                    {(banned.display_name || banned.username).substring(0, 2).toUpperCase()}
                                   </div>
                                 )}
                                 <div>
                                   <div className="text-white font-medium">
-                                    {banned.username}
+                                    {banned.display_name || banned.username}
                                   </div>
                                   {banned.reason && (
                                     <div className="text-[#949ba4] text-xs">
@@ -608,7 +650,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                               {canModerate && (
                                 <button
                                   onClick={() => {
-                                    if (confirm(`Unban ${banned.username}?`)) {
+                                    if (confirm(`Unban ${banned.display_name || banned.username}?`)) {
                                       handleUnbanUser(banned.user_id);
                                     }
                                   }}
@@ -635,11 +677,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                       >
                         <div className="flex items-center space-x-3">
                           <div className="w-8 h-8 rounded-full bg-[#5865f2] flex items-center justify-center text-white font-bold text-sm">
-                            {user.username.substring(0, 2).toUpperCase()}
+                            {(user.display_name || user.username).substring(0, 2).toUpperCase()}
                           </div>
                           <div>
                             <div className="text-white font-medium">
-                              {user.username}
+                              {user.display_name || user.username}
                             </div>
                             <div className="text-[#949ba4] text-xs capitalize">
                               {user.role || "User"}

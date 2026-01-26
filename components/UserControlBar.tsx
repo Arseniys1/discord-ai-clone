@@ -4,6 +4,7 @@ import { Mic, MicOff, Headphones, Settings } from "lucide-react";
 
 interface UserControlBarProps {
   username: string;
+  displayName?: string;
   avatar?: string;
   isMuted: boolean;
   isDeafened: boolean;
@@ -14,6 +15,7 @@ interface UserControlBarProps {
 
 const UserControlBar: React.FC<UserControlBarProps> = ({
   username,
+  displayName,
   avatar,
   isMuted,
   isDeafened,
@@ -33,7 +35,7 @@ const UserControlBar: React.FC<UserControlBarProps> = ({
         </div>
         <div className="min-w-0 leading-tight">
           <div className="text-white text-sm font-semibold truncate">
-            {username}
+            {displayName ?? username}
           </div>
           <div className="text-[#949ba4] text-xs truncate">Online</div>
         </div>

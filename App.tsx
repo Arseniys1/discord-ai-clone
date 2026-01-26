@@ -8,6 +8,7 @@ import VoiceStage from "./components/VoiceStage";
 import UserControlBar from "./components/UserControlBar";
 import SettingsModal from "./components/SettingsModal";
 import LoginScreen from "./components/LoginScreen";
+import AddServerModal from "./components/AddServerModal";
 import { Phone, Plus, Compass } from "lucide-react";
 import { io, Socket } from "socket.io-client";
 
@@ -59,6 +60,7 @@ const App: React.FC = () => {
   const [selectedInputDeviceId, setSelectedInputDeviceId] =
     useState<string>("");
   const [inputVolume, setInputVolume] = useState<number>(100);
+  const [isAddServerModalOpen, setIsAddServerModalOpen] = useState(false);
 
   // --- Refs ---
   const socketRef = useRef<Socket | null>(null);
@@ -588,6 +590,43 @@ const App: React.FC = () => {
       localStreamRef.current = finalStream;
       setActiveVideoTrack(finalStream);
 
+      // Update tracks in existing peer connections
+      peerConnectionsRef.current.forEach((pc, userId) => {
+        const senders = pc.getSenders();
+        
+        // Replace audio track
+        const audioTrack = finalStream.getAudioTracks()[0];
+        if (audioTrack) {
+          const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
+          if (audioSender) {
+            audioSender.replaceTrack(audioTrack).catch(err => {
+              console.error(`Error replacing audio track for ${userId}:`, err);
+            });
+          } else {
+            pc.addTrack(audioTrack, finalStream);
+          }
+        }
+
+        // Replace video track
+        const videoTrack = finalStream.getVideoTracks()[0];
+        if (videoTrack) {
+          const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+          if (videoSender) {
+            videoSender.replaceTrack(videoTrack).catch(err => {
+              console.error(`Error replacing video track for ${userId}:`, err);
+            });
+          } else {
+            pc.addTrack(videoTrack, finalStream);
+          }
+        } else {
+          // Remove video track if no video
+          const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+          if (videoSender) {
+            pc.removeTrack(videoSender);
+          }
+        }
+      });
+
       setIsVoiceConnected(true);
       if (withVideo) setIsVideoEnabled(true);
       if (withScreen) setIsScreenSharing(true);
@@ -621,10 +660,18 @@ const App: React.FC = () => {
 
   // Channel Selection
   useEffect(() => {
-    if (isLoggedIn && activeChannel.type === ChannelType.TEXT) {
+    if (!isLoggedIn) return;
+
+    if (activeChannel.type === ChannelType.TEXT) {
       joinTextChannel(activeChannel.id);
+      // If we were in a voice channel, leave it
+      if (isVoiceConnected) {
+        stopSession();
+      }
     }
-  }, [activeChannel, isLoggedIn]);
+    // Note: Voice channel joining is handled by the user clicking "Join Voice" button
+    // We don't auto-join voice channels when switching to them
+  }, [activeChannel.id, activeChannel.type, isLoggedIn]); // Only depend on channel ID and type, not the whole object
 
   // Volume Effect
   useEffect(() => {
@@ -641,6 +688,26 @@ const App: React.FC = () => {
         .forEach((t) => (t.enabled = !isMuted));
     }
   }, [isMuted]);
+
+  // Deafen Effect - Mute local mic when deafened
+  useEffect(() => {
+    if (isDeafened) {
+      // Mute local mic when deafened
+      if (localStreamRef.current) {
+        localStreamRef.current
+          .getAudioTracks()
+          .forEach((t) => (t.enabled = false));
+      }
+    } else {
+      // Restore local mic state based on mute
+      if (localStreamRef.current) {
+        localStreamRef.current
+          .getAudioTracks()
+          .forEach((t) => (t.enabled = !isMuted));
+      }
+    }
+    // Note: Remote audio muting is handled in VoiceStage component via isDeafened prop
+  }, [isDeafened, isMuted]);
 
   // --- Render ---
 
@@ -690,6 +757,29 @@ const App: React.FC = () => {
         isAdmin={permissions.includes("admin")}
       />
 
+      <AddServerModal
+        isOpen={isAddServerModalOpen}
+        onClose={() => setIsAddServerModalOpen(false)}
+        onCreateServer={async (name, icon) => {
+          // For now, just add to local state. In production, this would call the server API
+          const newServer: Server = {
+            id: `server_${Date.now()}`,
+            name,
+            icon: icon || "https://picsum.photos/id/10/50/50",
+            channels: [
+              {
+                id: `channel_${Date.now()}`,
+                name: "general",
+                type: ChannelType.TEXT,
+              },
+            ],
+          };
+          // Note: This is a local-only change. In production, persist to server.
+          setActiveServer(newServer);
+          setActiveChannel(newServer.channels[0]);
+        }}
+      />
+
       <Sidebar
         servers={SERVERS}
         activeServerId={activeServer.id}
@@ -697,6 +787,7 @@ const App: React.FC = () => {
           setActiveServer(s);
           setActiveChannel(s.channels[0]);
         }}
+        onAddServer={() => setIsAddServerModalOpen(true)}
       />
 
       <div className="flex flex-col w-60 bg-[#2b2d31]">
@@ -810,6 +901,7 @@ const App: React.FC = () => {
               videoTrack={activeVideoTrack}
               remoteStreams={remoteStreams}
               remoteUsernames={remoteUsernames}
+              isDeafened={isDeafened}
             />
           )}
         </main>

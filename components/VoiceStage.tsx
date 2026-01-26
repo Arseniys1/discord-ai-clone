@@ -23,6 +23,7 @@ interface VoiceStageProps {
   videoTrack: MediaStream | null;
   remoteStreams: Map<string, MediaStream>;
   remoteUsernames: Map<string, string>;
+  isDeafened?: boolean;
 }
 
 const VideoTile: React.FC<{
@@ -30,24 +31,41 @@ const VideoTile: React.FC<{
   label: string;
   isLocal?: boolean;
   forceShowVideo?: boolean;
-}> = ({ stream, label, isLocal = false, forceShowVideo = false }) => {
+  isDeafened?: boolean;
+}> = ({ stream, label, isLocal = false, forceShowVideo = false, isDeafened = false }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const [volume, setVolume] = useState(100);
   const [isHovered, setIsHovered] = useState(false);
 
   useEffect(() => {
     if (mediaRef.current && stream) {
       mediaRef.current.srcObject = stream;
+      // Ensure playback for both video and audio
+      if (mediaRef.current instanceof HTMLVideoElement) {
+        mediaRef.current.play().catch(err => {
+          console.error("Error playing video:", err);
+        });
+      } else if (mediaRef.current instanceof HTMLAudioElement) {
+        mediaRef.current.play().catch(err => {
+          console.error("Error playing audio:", err);
+        });
+      }
+    } else if (mediaRef.current && !stream) {
+      mediaRef.current.srcObject = null;
     }
   }, [stream]);
 
   // Handle volume change
   useEffect(() => {
     if (mediaRef.current && !isLocal) {
-      mediaRef.current.volume = volume / 100;
+      mediaRef.current.volume = isDeafened ? 0 : volume / 100;
     }
-  }, [volume, isLocal]);
+    if (audioRef.current && !isLocal) {
+      audioRef.current.volume = isDeafened ? 0 : volume / 100;
+    }
+  }, [volume, isLocal, isDeafened]);
 
   const toggleFullscreen = () => {
     if (!containerRef.current) return;
@@ -81,6 +99,14 @@ const VideoTile: React.FC<{
           playsInline
           muted={isLocal} // Local user should be muted to avoid feedback
           className="w-full h-full object-cover bg-black"
+          onLoadedMetadata={() => {
+            // Ensure video plays when metadata is loaded
+            if (mediaRef.current instanceof HTMLVideoElement) {
+              mediaRef.current.play().catch(err => {
+                console.error("Error playing video after metadata loaded:", err);
+              });
+            }
+          }}
         />
       ) : (
         <div className="w-full h-full flex flex-col items-center justify-center space-y-4 bg-[#2b2d31]">
@@ -88,12 +114,22 @@ const VideoTile: React.FC<{
             <User size={64} />
           </div>
           <span className="text-white font-semibold">{label}</span>
-          {/* If there is an audio stream but no video, we still need a hidden video/audio element to play sound */}
-          {stream && (
+          {/* If there is an audio stream but no video, we need an audio element to play sound */}
+          {stream && stream.getAudioTracks().length > 0 && (
             <audio
-              ref={mediaRef as React.RefObject<HTMLAudioElement>}
+              ref={(el) => {
+                audioRef.current = el;
+                if (el) {
+                  el.srcObject = stream;
+                  el.play().catch(err => {
+                    console.error("Error playing audio:", err);
+                  });
+                }
+              }}
               autoPlay
+              playsInline
               muted={isLocal}
+              className="hidden"
             />
           )}
         </div>
@@ -150,6 +186,7 @@ const VoiceStage: React.FC<VoiceStageProps> = ({
   videoTrack,
   remoteStreams,
   remoteUsernames,
+  isDeafened = false,
 }) => {
   if (!isConnected) {
     return (
@@ -202,6 +239,7 @@ const VoiceStage: React.FC<VoiceStageProps> = ({
             key={id}
             stream={stream}
             label={remoteUsernames.get(id) || `User ${id.substring(0, 5)}...`}
+            isDeafened={isDeafened}
           />
         ))}
       </div>

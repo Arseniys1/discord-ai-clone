@@ -104,6 +104,85 @@ const db = new sqlite3.Database(config.DB_PATH, (err) => {
             timestamp TEXT
         )`,
       );
+
+      // Create Servers Table
+      db.run(
+        `CREATE TABLE IF NOT EXISTS servers (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            icon TEXT
+        )`,
+      );
+
+      // Create Channels Table
+      db.run(
+        `CREATE TABLE IF NOT EXISTS channels (
+            id TEXT PRIMARY KEY,
+            server_id TEXT,
+            name TEXT,
+            type TEXT,
+            FOREIGN KEY(server_id) REFERENCES servers(id)
+        )`,
+      );
+
+      // Seed Servers and Channels
+      db.get("SELECT COUNT(*) as count FROM servers", (err, row) => {
+        if (row && row.count === 0) {
+          const servers = [
+            {
+              id: "server_1",
+              name: "Discord Clone",
+              icon: "https://picsum.photos/id/10/50/50",
+            },
+            {
+              id: "server_2",
+              name: "Gaming Community",
+              icon: "https://picsum.photos/id/11/50/50",
+            },
+          ];
+
+          const insertServer = db.prepare(
+            "INSERT INTO servers (id, name, icon) VALUES (?, ?, ?)",
+          );
+          servers.forEach((s) => insertServer.run(s.id, s.name, s.icon));
+          insertServer.finalize();
+
+          const channels = [
+            {
+              id: "channel_1",
+              server_id: "server_1",
+              name: "general",
+              type: "TEXT",
+            },
+            {
+              id: "channel_2",
+              server_id: "server_1",
+              name: "voice-chat",
+              type: "VOICE",
+            },
+            {
+              id: "channel_3",
+              server_id: "server_2",
+              name: "lfg",
+              type: "TEXT",
+            },
+            {
+              id: "channel_4",
+              server_id: "server_2",
+              name: "lobby",
+              type: "VOICE",
+            },
+          ];
+
+          const insertChannel = db.prepare(
+            "INSERT INTO channels (id, server_id, name, type) VALUES (?, ?, ?, ?)",
+          );
+          channels.forEach((c) =>
+            insertChannel.run(c.id, c.server_id, c.name, c.type),
+          );
+          insertChannel.finalize();
+        }
+      });
     });
   }
 });
@@ -337,6 +416,33 @@ app.post("/users/avatar", authenticateToken, (req, res) => {
       res.json({ message: "Avatar updated successfully", avatarUrl });
     },
   );
+});
+
+// Get servers and their channels
+app.get("/servers", authenticateToken, (req, res) => {
+  db.all("SELECT * FROM servers", [], async (err, servers) => {
+    if (err) return res.status(500).json({ error: err.message });
+
+    try {
+      const serversWithChannels = await Promise.all(
+        servers.map(async (server) => {
+          return new Promise((resolve, reject) => {
+            db.all(
+              "SELECT * FROM channels WHERE server_id = ?",
+              [server.id],
+              (err, channels) => {
+                if (err) reject(err);
+                else resolve({ ...server, channels });
+              },
+            );
+          });
+        }),
+      );
+      res.json(serversWithChannels);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
 });
 
 // --- Socket.IO Middleware for Authentication ---

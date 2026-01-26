@@ -10,6 +10,8 @@ export interface Message {
   content: string;
   timestamp: Date;
   isAI?: boolean;
+  dbId?: number;
+  userId?: number;
 }
 
 export interface Channel {

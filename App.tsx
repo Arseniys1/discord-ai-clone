@@ -19,11 +19,11 @@ const App: React.FC = () => {
   const [username, setUsername] = useState("You");
   const [avatar, setAvatar] = useState<string | undefined>(undefined);
   const [permissions, setPermissions] = useState<string[]>([]);
+  const [userId, setUserId] = useState<number | undefined>(undefined);
 
-  const [activeServer, setActiveServer] = useState<Server>(SERVERS[0]);
-  const [activeChannel, setActiveChannel] = useState<Channel>(
-    SERVERS[0].channels[0],
-  );
+  const [servers, setServers] = useState<Server[]>([]);
+  const [activeServer, setActiveServer] = useState<Server | null>(null);
+  const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
 
   // Chat State
   const [messages, setMessages] = useState<Message[]>([]);
@@ -84,6 +84,7 @@ const App: React.FC = () => {
       user: string,
       userAvatar?: string,
       userPermissions?: string[],
+      userUserId?: number,
     ) => {
       setConnectionError("");
 
@@ -96,12 +97,13 @@ const App: React.FC = () => {
         transports: ["websocket", "polling"],
       });
 
-      newSocket.on("connect", () => {
+      newSocket.on("connect", async () => {
         console.log("Connected to server");
         setIsLoggedIn(true);
         setUsername(user);
         setAvatar(userAvatar);
         setPermissions(userPermissions || []);
+        setUserId(userUserId);
         setConnectionError("");
 
         localStorage.setItem("discord_clone_token", token);
@@ -113,7 +115,39 @@ const App: React.FC = () => {
             "discord_clone_permissions",
             JSON.stringify(userPermissions),
           );
+        if (userUserId)
+          localStorage.setItem("discord_clone_userId", userUserId.toString());
         localStorage.setItem("discord_clone_url", url);
+
+        // Load servers from API
+        try {
+          const serversRes = await fetch(`${url}/servers`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (serversRes.ok) {
+            const serversData = await serversRes.json();
+            // Transform server data to match Server type
+            const transformedServers: Server[] = serversData.map((s: any) => ({
+              id: s.id,
+              name: s.name,
+              icon: s.icon,
+              channels: (s.channels || []).map((c: any) => ({
+                id: c.id,
+                name: c.name,
+                type: c.type === "VOICE" ? ChannelType.VOICE : ChannelType.TEXT,
+              })),
+            }));
+            setServers(transformedServers);
+            if (transformedServers.length > 0) {
+              setActiveServer(transformedServers[0]);
+              if (transformedServers[0].channels.length > 0) {
+                setActiveChannel(transformedServers[0].channels[0]);
+              }
+            }
+          }
+        } catch (e) {
+          console.error("Failed to load servers:", e);
+        }
       });
 
       newSocket.on("connect_error", (err) => {
@@ -144,6 +178,7 @@ const App: React.FC = () => {
     const savedPermissionsStr = localStorage.getItem(
       "discord_clone_permissions",
     );
+    const savedUserIdStr = localStorage.getItem("discord_clone_userId");
 
     if (savedToken && savedUsername && savedUrl) {
       let savedPermissions: string[] = [];
@@ -151,6 +186,8 @@ const App: React.FC = () => {
         if (savedPermissionsStr)
           savedPermissions = JSON.parse(savedPermissionsStr);
       } catch (e) {}
+      
+      const savedUserId = savedUserIdStr ? parseInt(savedUserIdStr) : undefined;
 
       handleConnect(
         savedUrl,
@@ -158,9 +195,50 @@ const App: React.FC = () => {
         savedUsername,
         savedAvatar || undefined,
         savedPermissions,
+        savedUserId,
       );
     }
   }, [handleConnect]);
+
+  // Load servers when logged in (if not already loaded)
+  useEffect(() => {
+    if (isLoggedIn && servers.length === 0 && socketRef.current) {
+      const loadServers = async () => {
+        try {
+          const savedUrl = localStorage.getItem("discord_clone_url");
+          const token = localStorage.getItem("discord_clone_token");
+          if (!savedUrl || !token) return;
+
+          const serversRes = await fetch(`${savedUrl}/servers`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (serversRes.ok) {
+            const serversData = await serversRes.json();
+            const transformedServers: Server[] = serversData.map((s: any) => ({
+              id: s.id,
+              name: s.name,
+              icon: s.icon,
+              channels: (s.channels || []).map((c: any) => ({
+                id: c.id,
+                name: c.name,
+                type: c.type === "VOICE" ? ChannelType.VOICE : ChannelType.TEXT,
+              })),
+            }));
+            setServers(transformedServers);
+            if (transformedServers.length > 0 && !activeServer) {
+              setActiveServer(transformedServers[0]);
+              if (transformedServers[0].channels.length > 0) {
+                setActiveChannel(transformedServers[0].channels[0]);
+              }
+            }
+          }
+        } catch (e) {
+          console.error("Failed to load servers:", e);
+        }
+      };
+      loadServers();
+    }
+  }, [isLoggedIn, servers.length, activeServer]);
 
   // --- WebRTC Core Logic ---
 
@@ -239,8 +317,21 @@ const App: React.FC = () => {
           avatar: msgObj.avatar,
           content: msgObj.content || "Message",
           timestamp: msgObj.timestamp ? new Date(msgObj.timestamp) : new Date(),
+          dbId: msgObj.dbId,
         },
       ]);
+    };
+
+    const handleMessageDeleted = (data: { messageId: string | number }) => {
+      setMessages((prev) => prev.filter((msg) => {
+        const msgId = msg.dbId || msg.id;
+        return msgId.toString() !== data.messageId.toString();
+      }));
+    };
+
+    const handleError = (data: { message: string }) => {
+      console.error("Socket error:", data.message);
+      alert(data.message);
     };
 
     const handleChatHistory = (history: any[]) => {
@@ -250,6 +341,8 @@ const App: React.FC = () => {
         avatar: msg.avatar,
         content: msg.content,
         timestamp: new Date(msg.timestamp),
+        dbId: msg.id,
+        userId: msg.user_id,
       }));
       setMessages(formatted);
     };
@@ -438,6 +531,8 @@ const App: React.FC = () => {
     socket.on("answer", handleAnswer);
     socket.on("candidate", handleCandidate);
     socket.on("user_left", handleUserLeft);
+    socket.on("message_deleted", handleMessageDeleted);
+    socket.on("error", handleError);
 
     // Request initial state
     socket.emit("request_online_users");
@@ -452,6 +547,8 @@ const App: React.FC = () => {
       socket.off("answer", handleAnswer);
       socket.off("candidate", handleCandidate);
       socket.off("user_left", handleUserLeft);
+      socket.off("message_deleted", handleMessageDeleted);
+      socket.off("error", handleError);
     };
   }, [isLoggedIn]); // Only re-run if login status changes
 
@@ -632,7 +729,7 @@ const App: React.FC = () => {
       if (withScreen) setIsScreenSharing(true);
 
       // 4. Join Channel
-      if (socketRef.current) {
+      if (socketRef.current && activeChannel) {
         socketRef.current.emit("join_voice_channel", activeChannel.id);
       }
     } catch (e) {
@@ -660,7 +757,7 @@ const App: React.FC = () => {
 
   // Channel Selection
   useEffect(() => {
-    if (!isLoggedIn) return;
+    if (!isLoggedIn || !activeChannel) return;
 
     if (activeChannel.type === ChannelType.TEXT) {
       joinTextChannel(activeChannel.id);
@@ -671,7 +768,7 @@ const App: React.FC = () => {
     }
     // Note: Voice channel joining is handled by the user clicking "Join Voice" button
     // We don't auto-join voice channels when switching to them
-  }, [activeChannel.id, activeChannel.type, isLoggedIn]); // Only depend on channel ID and type, not the whole object
+  }, [activeChannel?.id, activeChannel?.type, isLoggedIn]); // Only depend on channel ID and type, not the whole object
 
   // Volume Effect
   useEffect(() => {
@@ -720,6 +817,14 @@ const App: React.FC = () => {
     );
   }
 
+  if (!activeServer || !activeChannel) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-[#313338] text-white">
+        <div>Loading servers...</div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#313338] select-none">
       <SettingsModal
@@ -755,6 +860,9 @@ const App: React.FC = () => {
           }
         }}
         isAdmin={permissions.includes("admin")}
+        permissions={permissions}
+        activeServerId={activeServer?.id}
+        activeChannelId={activeChannel?.id}
       />
 
       <AddServerModal
@@ -781,11 +889,13 @@ const App: React.FC = () => {
       />
 
       <Sidebar
-        servers={SERVERS}
+        servers={servers}
         activeServerId={activeServer.id}
         onSelectServer={(s) => {
           setActiveServer(s);
-          setActiveChannel(s.channels[0]);
+          if (s.channels.length > 0) {
+            setActiveChannel(s.channels[0]);
+          }
         }}
         onAddServer={() => setIsAddServerModalOpen(true)}
       />
@@ -855,7 +965,7 @@ const App: React.FC = () => {
             <ChatArea
               messages={messages}
               onSendMessage={(text) => {
-                if (socketRef.current && text.trim()) {
+                if (socketRef.current && text.trim() && activeChannel) {
                   // Optimistic update
                   setMessages((prev) => [
                     ...prev,
@@ -864,6 +974,7 @@ const App: React.FC = () => {
                       author: username,
                       content: text,
                       timestamp: new Date(),
+                      userId: userId,
                     },
                   ]);
                   socketRef.current.emit("send_message", {
@@ -872,6 +983,17 @@ const App: React.FC = () => {
                   });
                 }
               }}
+              onDeleteMessage={(messageId) => {
+                if (socketRef.current && activeChannel) {
+                  socketRef.current.emit("delete_message", {
+                    messageId: messageId,
+                    channelId: activeChannel.id,
+                  });
+                }
+              }}
+              currentUserId={userId}
+              isAdmin={permissions.includes("admin")}
+              permissions={permissions}
             />
           ) : (
             <VoiceStage

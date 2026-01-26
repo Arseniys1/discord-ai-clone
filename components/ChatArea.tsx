@@ -1,15 +1,27 @@
-import React, { useRef, useEffect } from "react";
+import React, { useRef, useEffect, useState } from "react";
 import { Message } from "../types";
-import { PlusCircle, Gift, Sticker, Smile } from "lucide-react";
+import { PlusCircle, Gift, Sticker, Smile, Trash2, MoreVertical } from "lucide-react";
 
 interface ChatAreaProps {
   messages: Message[];
   onSendMessage: (text: string) => void;
+  onDeleteMessage?: (messageId: string | number) => void;
+  currentUserId?: number;
+  isAdmin?: boolean;
+  permissions?: string[];
 }
 
-const ChatArea: React.FC<ChatAreaProps> = ({ messages, onSendMessage }) => {
+const ChatArea: React.FC<ChatAreaProps> = ({ 
+  messages, 
+  onSendMessage, 
+  onDeleteMessage,
+  currentUserId,
+  isAdmin,
+  permissions 
+}) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -25,6 +37,17 @@ const ChatArea: React.FC<ChatAreaProps> = ({ messages, onSendMessage }) => {
     }
   };
 
+  const canDeleteMessage = (msg: Message) => {
+    if (!onDeleteMessage) return false;
+    const hasAdminPerms = isAdmin || (permissions && permissions.includes("admin"));
+    const hasModeratorPerms = permissions && (
+      permissions.includes("manage_users") || 
+      permissions.includes("delete_messages")
+    );
+    const isAuthor = msg.userId === currentUserId;
+    return hasAdminPerms || hasModeratorPerms || isAuthor;
+  };
+
   return (
     <div className="flex-1 flex flex-col bg-[#313338] overflow-hidden">
       <div
@@ -34,7 +57,9 @@ const ChatArea: React.FC<ChatAreaProps> = ({ messages, onSendMessage }) => {
         {messages.map((msg) => (
           <div
             key={msg.id}
-            className="flex space-x-4 hover:bg-[#2e3035] -mx-4 px-4 py-1 group"
+            className="flex space-x-4 hover:bg-[#2e3035] -mx-4 px-4 py-1 group relative"
+            onMouseEnter={() => setHoveredMessageId(msg.id)}
+            onMouseLeave={() => setHoveredMessageId(null)}
           >
             <img
               src={
@@ -67,6 +92,20 @@ const ChatArea: React.FC<ChatAreaProps> = ({ messages, onSendMessage }) => {
                 {msg.content}
               </p>
             </div>
+            {canDeleteMessage(msg) && hoveredMessageId === msg.id && (
+              <button
+                onClick={() => {
+                  const messageId = msg.dbId || msg.id;
+                  if (onDeleteMessage) {
+                    onDeleteMessage(messageId);
+                  }
+                }}
+                className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded hover:bg-[#1e1f22] text-[#b5bac1] hover:text-red-400"
+                title="Delete message"
+              >
+                <Trash2 size={16} />
+              </button>
+            )}
           </div>
         ))}
       </div>

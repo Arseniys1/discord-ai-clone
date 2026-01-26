@@ -16,11 +16,8 @@ const ChannelList: React.FC<ChannelListProps> = ({ channels, activeChannelId, on
   return (
     <div className="space-y-5">
       <div>
-        <div className="flex items-center justify-between text-[#949ba4] text-xs font-bold uppercase mb-1 px-1">
+        <div className="text-[#949ba4] text-xs font-bold uppercase mb-1 px-1">
           <span>Text Channels</span>
-          <button className="hover:text-white">
-            <ICONS.Plus size={14} />
-          </button>
         </div>
         <div className="space-y-0.5">
           {textChannels.map((channel) => (
@@ -37,11 +34,8 @@ const ChannelList: React.FC<ChannelListProps> = ({ channels, activeChannelId, on
       </div>
 
       <div>
-        <div className="flex items-center justify-between text-[#949ba4] text-xs font-bold uppercase mb-1 px-1">
+        <div className="text-[#949ba4] text-xs font-bold uppercase mb-1 px-1">
           <span>Voice Channels</span>
-          <button className="hover:text-white">
-            <ICONS.Plus size={14} />
-          </button>
         </div>
         <div className="space-y-0.5">
           {voiceChannels.map((channel) => (

@@ -5,8 +5,6 @@ import {
   Monitor,
   PhoneOff,
   User,
-  MoreHorizontal,
-  MessageSquare,
   Volume2,
   VolumeX,
   Maximize,
@@ -260,12 +258,6 @@ const VoiceStage: React.FC<VoiceStageProps> = ({
         >
           <Monitor size={24} />
         </button>
-        <button className="p-4 bg-[#313338] text-white rounded-xl hover:bg-[#3f4147] transition-all duration-200">
-          <Mic size={24} />
-        </button>
-        <button className="p-4 bg-[#313338] text-white rounded-xl hover:bg-[#3f4147] transition-all duration-200">
-          <MoreHorizontal size={24} />
-        </button>
         <button
           onClick={onDisconnect}
           className="p-4 bg-[#da373c] hover:bg-[#a1282c] text-white rounded-xl transition-all duration-200"
@@ -275,15 +267,6 @@ const VoiceStage: React.FC<VoiceStageProps> = ({
         </button>
       </div>
 
-      {/* Sidebar Overlay Action Buttons */}
-      <div className="absolute top-4 right-4 flex space-x-2 z-10">
-        <div className="p-2 bg-black/40 hover:bg-black/60 rounded cursor-pointer text-[#b5bac1] hover:text-white backdrop-blur-md">
-          <User size={20} />
-        </div>
-        <div className="p-2 bg-black/40 hover:bg-black/60 rounded cursor-pointer text-[#b5bac1] hover:text-white backdrop-blur-md">
-          <MessageSquare size={20} />
-        </div>
-      </div>
     </div>
   );
 };

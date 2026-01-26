@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState } from "react";
 import { Message } from "../types";
-import { PlusCircle, Gift, Sticker, Smile, Trash2, MoreVertical } from "lucide-react";
+import { Trash2 } from "lucide-react";
 
 interface ChatAreaProps {
   messages: Message[];
@@ -115,26 +115,12 @@ const ChatArea: React.FC<ChatAreaProps> = ({
           onSubmit={handleSubmit}
           className="relative flex items-center bg-[#383a40] rounded-lg px-4 py-2.5"
         >
-          <button
-            type="button"
-            className="text-[#b5bac1] hover:text-[#dbdee1] mr-4"
-          >
-            <PlusCircle size={24} />
-          </button>
           <input
             ref={inputRef}
             type="text"
             placeholder="Message #general"
             className="flex-1 bg-transparent text-[#dbdee1] focus:outline-none placeholder-[#949ba4]"
           />
-          <div className="flex items-center space-x-3 ml-4 text-[#b5bac1]">
-            <Gift size={24} className="hover:text-[#dbdee1] cursor-pointer" />
-            <Sticker
-              size={24}
-              className="hover:text-[#dbdee1] cursor-pointer"
-            />
-            <Smile size={24} className="hover:text-[#dbdee1] cursor-pointer" />
-          </div>
         </form>
       </div>
     </div>

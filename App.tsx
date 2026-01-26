@@ -1,15 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { SERVERS, ICONS } from "./constants";
+import { ICONS } from "./constants";
 import { Channel, ChannelType, Message, Server } from "./types";
-import Sidebar from "./components/Sidebar";
 import ChannelList from "./components/ChannelList";
 import ChatArea from "./components/ChatArea";
 import VoiceStage from "./components/VoiceStage";
 import UserControlBar from "./components/UserControlBar";
 import SettingsModal from "./components/SettingsModal";
 import LoginScreen from "./components/LoginScreen";
-import AddServerModal from "./components/AddServerModal";
-import { Phone, Plus, Compass } from "lucide-react";
 import { io, Socket } from "socket.io-client";
 
 const App: React.FC = () => {
@@ -60,7 +57,6 @@ const App: React.FC = () => {
   const [selectedInputDeviceId, setSelectedInputDeviceId] =
     useState<string>("");
   const [inputVolume, setInputVolume] = useState<number>(100);
-  const [isAddServerModalOpen, setIsAddServerModalOpen] = useState(false);
 
   // --- Refs ---
   const socketRef = useRef<Socket | null>(null);
@@ -137,11 +133,13 @@ const App: React.FC = () => {
                 type: c.type === "VOICE" ? ChannelType.VOICE : ChannelType.TEXT,
               })),
             }));
-            setServers(transformedServers);
+            // Используем только первый сервер
             if (transformedServers.length > 0) {
-              setActiveServer(transformedServers[0]);
-              if (transformedServers[0].channels.length > 0) {
-                setActiveChannel(transformedServers[0].channels[0]);
+              const firstServer = transformedServers[0];
+              setServers([firstServer]);
+              setActiveServer(firstServer);
+              if (firstServer.channels.length > 0) {
+                setActiveChannel(firstServer.channels[0]);
               }
             }
           }
@@ -224,11 +222,13 @@ const App: React.FC = () => {
                 type: c.type === "VOICE" ? ChannelType.VOICE : ChannelType.TEXT,
               })),
             }));
-            setServers(transformedServers);
+            // Используем только первый сервер
             if (transformedServers.length > 0 && !activeServer) {
-              setActiveServer(transformedServers[0]);
-              if (transformedServers[0].channels.length > 0) {
-                setActiveChannel(transformedServers[0].channels[0]);
+              const firstServer = transformedServers[0];
+              setServers([firstServer]);
+              setActiveServer(firstServer);
+              if (firstServer.channels.length > 0) {
+                setActiveChannel(firstServer.channels[0]);
               }
             }
           }
@@ -826,7 +826,7 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#313338] select-none">
+    <div className="flex h-screen w-screen overflow-hidden bg-[#2b2d31] select-none">
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
@@ -865,42 +865,8 @@ const App: React.FC = () => {
         activeChannelId={activeChannel?.id}
       />
 
-      <AddServerModal
-        isOpen={isAddServerModalOpen}
-        onClose={() => setIsAddServerModalOpen(false)}
-        onCreateServer={async (name, icon) => {
-          // For now, just add to local state. In production, this would call the server API
-          const newServer: Server = {
-            id: `server_${Date.now()}`,
-            name,
-            icon: icon || "https://picsum.photos/id/10/50/50",
-            channels: [
-              {
-                id: `channel_${Date.now()}`,
-                name: "general",
-                type: ChannelType.TEXT,
-              },
-            ],
-          };
-          // Note: This is a local-only change. In production, persist to server.
-          setActiveServer(newServer);
-          setActiveChannel(newServer.channels[0]);
-        }}
-      />
 
-      <Sidebar
-        servers={servers}
-        activeServerId={activeServer.id}
-        onSelectServer={(s) => {
-          setActiveServer(s);
-          if (s.channels.length > 0) {
-            setActiveChannel(s.channels[0]);
-          }
-        }}
-        onAddServer={() => setIsAddServerModalOpen(true)}
-      />
-
-      <div className="flex flex-col w-60 bg-[#2b2d31]">
+      <div className="flex flex-col w-60 bg-[#2b2d31] border-r border-[#1f2023]">
         <div className="h-12 flex items-center px-4 shadow-sm border-b border-[#1f2023] font-bold text-white">
           {activeServer.name}
         </div>
@@ -941,8 +907,8 @@ const App: React.FC = () => {
         />
       </div>
 
-      <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-12 flex items-center justify-between px-4 shadow-sm border-b border-[#1f2023] z-10 bg-[#313338]">
+      <div className="flex-1 flex flex-col min-w-0 bg-[#313338]">
+        <header className="h-12 flex items-center px-4 shadow-sm border-b border-[#1f2023] z-10 bg-[#313338]">
           <div className="flex items-center space-x-2">
             {activeChannel.type === ChannelType.TEXT ? (
               <ICONS.Hash size={20} className="text-[#80848e]" />
@@ -952,11 +918,6 @@ const App: React.FC = () => {
             <span className="font-semibold text-white">
               {activeChannel.name}
             </span>
-          </div>
-          <div className="flex items-center space-x-4 text-[#b5bac1]">
-            <Phone size={20} className="hover:text-white cursor-pointer" />
-            <Plus size={20} className="hover:text-white cursor-pointer" />
-            <Compass size={20} className="hover:text-white cursor-pointer" />
           </div>
         </header>
 
